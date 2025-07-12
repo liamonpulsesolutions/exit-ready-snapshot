@@ -4,6 +4,7 @@ from typing import Dict, Any
 import logging
 from ..tools.google_sheets import GoogleSheetsLogger
 from ..tools.pii_detector import PIIDetector
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ def validate_form_data(form_data_str: str) -> str:
     
     required_fields = [
         'uuid', 'name', 'email', 'industry', 'years_in_business',
-        'age_range', 'exit_timeline', 'location', 'responses'
+        'age_range', 'exit_timeline', 'location', 'responses', 'revenue_range'
     ]
     
     missing_fields = []
@@ -91,6 +92,122 @@ def log_responses_tool(data: str) -> str:
     result = sheets_logger.log_responses(uuid, responses)
     return json.dumps(result)
 
+@tool("store_pii_mapping")
+def store_pii_mapping_tool(mapping_data: str) -> str:
+    """Store PII mapping for later retrieval by reinsertion agent"""
+    import json
+    from ..agents.pii_reinsertion_agent import store_pii_mapping
+    
+    try:
+        data = json.loads(mapping_data)
+        uuid = data.get('uuid')
+        mapping = data.get('mapping')
+        
+        if uuid and mapping:
+            store_pii_mapping(uuid, mapping)
+            logger.info(f"Stored PII mapping for UUID: {uuid} with {len(mapping)} entries")
+            return json.dumps({
+                "status": "success", 
+                "uuid": uuid,
+                "entries_stored": len(mapping)
+            })
+        else:
+            return json.dumps({
+                "status": "error", 
+                "message": "Missing UUID or mapping"
+            })
+    except Exception as e:
+        logger.error(f"Error storing PII mapping: {str(e)}")
+        return json.dumps({
+            "status": "error",
+            "message": str(e)
+        })
+
+@tool("process_complete_form")
+def process_complete_form(form_data_str: str) -> str:
+    """
+    Complete intake processing: validate, detect PII, redact, and prepare output
+    """
+    import json
+    
+    try:
+        # Parse form data
+        form_data = json.loads(form_data_str) if isinstance(form_data_str, str) else form_data_str
+        uuid = form_data.get('uuid', 'unknown')
+        
+        # Initialize PII mapping
+        complete_pii_mapping = {
+            "[OWNER_NAME]": form_data.get('name', ''),
+            "[EMAIL]": form_data.get('email', ''),
+            "[LOCATION]": form_data.get('location', ''),
+            "[UUID]": uuid
+        }
+        
+        # Create anonymized version
+        anonymized_data = form_data.copy()
+        
+        # Redact basic fields
+        anonymized_data['name'] = '[OWNER_NAME]'
+        anonymized_data['email'] = '[EMAIL]'
+        
+        # Process all text responses for additional PII
+        anonymized_responses = {}
+        for q_id, response in form_data.get('responses', {}).items():
+            if response and isinstance(response, str) and len(response) > 20:
+                # Detect and redact PII in responses
+                pii_result = pii_detector.detect_and_redact(response)
+                anonymized_responses[q_id] = pii_result['redacted_text']
+                
+                # Add any found PII to mapping
+                if pii_result.get('mapping'):
+                    complete_pii_mapping.update(pii_result['mapping'])
+            else:
+                anonymized_responses[q_id] = response
+        
+        anonymized_data['responses'] = anonymized_responses
+        
+        # Look for company names in responses
+        all_responses_text = ' '.join(str(v) for v in form_data.get('responses', {}).values())
+        if 'company' in all_responses_text.lower() or 'business' in all_responses_text.lower():
+            # Simple company name extraction
+            import re
+            company_patterns = [
+                r'(?:my company|our company|the company),?\s+([A-Z][A-Za-z\s&]+?)(?:\s+(?:Inc|LLC|Ltd|Corp))?',
+                r'([A-Z][A-Za-z\s&]+?)\s+(?:Inc|LLC|Ltd|Corp|Company)',
+            ]
+            
+            for pattern in company_patterns:
+                match = re.search(pattern, all_responses_text)
+                if match:
+                    company_name = match.group(1).strip()
+                    complete_pii_mapping["[COMPANY_NAME]"] = company_name
+                    # Redact company name from responses
+                    for q_id in anonymized_responses:
+                        if company_name in anonymized_responses[q_id]:
+                            anonymized_responses[q_id] = anonymized_responses[q_id].replace(
+                                company_name, "[COMPANY_NAME]"
+                            )
+                    break
+        
+        # Prepare output
+        output = {
+            "uuid": uuid,
+            "anonymized_data": anonymized_data,
+            "pii_mapping": complete_pii_mapping,
+            "pii_found": len(complete_pii_mapping) > 4,  # More than just the basics
+            "validation_status": "success"
+        }
+        
+        return json.dumps(output)
+        
+    except Exception as e:
+        logger.error(f"Error processing form: {str(e)}")
+        return json.dumps({
+            "uuid": form_data.get('uuid', 'unknown') if 'form_data' in locals() else 'unknown',
+            "validation_status": "error",
+            "error": str(e)
+        })
+
 def create_intake_agent(llm, prompts: Dict[str, Any]) -> Agent:
     """Create the intake agent for processing form submissions"""
     
@@ -102,7 +219,9 @@ def create_intake_agent(llm, prompts: Dict[str, Any]) -> Agent:
         validate_form_data,
         detect_and_redact_pii_tool,
         log_to_crm_tool,
-        log_responses_tool
+        log_responses_tool,
+        store_pii_mapping_tool,
+        process_complete_form
     ]
     
     return Agent(

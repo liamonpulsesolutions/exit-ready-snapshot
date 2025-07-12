@@ -14,37 +14,40 @@ pii_mapping_store = {}
 def retrieve_pii_mapping(uuid: str) -> str:
     """
     Retrieve the PII mapping for a specific assessment UUID.
-    In production, this would fetch from secure storage.
+    CRITICAL: This must use the actual mapping from intake agent, not mock data.
     """
     try:
-        # For now, we'll simulate retrieval
-        # In production, this would connect to Redis or secure database
-        
-        # Mock PII mapping for testing
-        mock_mapping = {
-            "[OWNER_NAME]": "John Smith",
-            "[EMAIL]": "john@example.com",
-            "[COMPANY_NAME]": "Smith Enterprises",
-            "[LOCATION]": "Pacific/Western US"
-        }
-        
-        # Check if we have a stored mapping (from intake agent)
+        # Check if we have a stored mapping for this UUID
         if uuid in pii_mapping_store:
             mapping = pii_mapping_store[uuid]
+            logger.info(f"Retrieved PII mapping for UUID {uuid} with {len(mapping)} entries")
+            
+            return json.dumps({
+                "uuid": uuid,
+                "mapping": mapping,
+                "mapping_count": len(mapping),
+                "status": "found"
+            })
         else:
-            # Use mock data for testing
-            mapping = mock_mapping
-            logger.warning(f"No PII mapping found for UUID {uuid}, using mock data")
-        
-        return json.dumps({
-            "uuid": uuid,
-            "mapping": mapping,
-            "mapping_count": len(mapping)
-        })
+            # CRITICAL: No mock data! Return empty mapping if not found
+            logger.error(f"No PII mapping found for UUID {uuid} - this is a critical error")
+            
+            # Return empty mapping with error status
+            return json.dumps({
+                "uuid": uuid,
+                "mapping": {},
+                "mapping_count": 0,
+                "status": "not_found",
+                "error": "PII mapping not found - intake agent may have failed to store mapping"
+            })
         
     except Exception as e:
         logger.error(f"Error retrieving PII mapping: {str(e)}")
-        return json.dumps({"error": str(e), "mapping": {}})
+        return json.dumps({
+            "error": str(e), 
+            "mapping": {}, 
+            "status": "error"
+        })
 
 @tool("reinsert_personal_info")
 def reinsert_personal_info(content_with_mapping: str) -> str:
@@ -58,9 +61,10 @@ def reinsert_personal_info(content_with_mapping: str) -> str:
         mapping = data.get('mapping', {})
         
         if not mapping:
+            logger.error("No PII mapping provided for reinsertion")
             return json.dumps({
                 "success": False,
-                "error": "No PII mapping provided",
+                "error": "No PII mapping provided - cannot personalize report",
                 "content": content
             })
         
@@ -72,7 +76,7 @@ def reinsert_personal_info(content_with_mapping: str) -> str:
         sorted_mapping = sorted(mapping.items(), key=lambda x: len(x[0]), reverse=True)
         
         for placeholder, actual_value in sorted_mapping:
-            if placeholder in personalized_content:
+            if placeholder in personalized_content and actual_value:  # Only replace if value exists
                 # Count occurrences before replacement
                 occurrences = personalized_content.count(placeholder)
                 
@@ -84,9 +88,13 @@ def reinsert_personal_info(content_with_mapping: str) -> str:
                     "value": actual_value,
                     "occurrences": occurrences
                 })
+                
+                logger.info(f"Replaced {occurrences} occurrences of {placeholder}")
         
         # Check for any remaining placeholders
         remaining_placeholders = re.findall(r'\[[\w_]+\]', personalized_content)
+        if remaining_placeholders:
+            logger.warning(f"Remaining placeholders after reinsertion: {remaining_placeholders}")
         
         return json.dumps({
             "success": True,
@@ -111,10 +119,11 @@ def personalize_recommendations(recommendation_data: str) -> str:
         owner_name = data.get('owner_name', '')
         
         if not owner_name:
+            logger.warning("No owner name provided for personalization")
             return json.dumps({
-                "success": False,
-                "error": "Owner name not provided",
-                "content": content
+                "success": True,  # Not a failure, just less personal
+                "content": content,
+                "personalizations_applied": 0
             })
         
         # Extract first name for more personal touch
@@ -128,34 +137,43 @@ def personalize_recommendations(recommendation_data: str) -> str:
             "the business owner": "you",
             "The business owner": "You",
             "business owner's": "your",
-            "owner's": "your"
+            "owner's": "your",
+            "their business": "your business",
+            "Their business": "Your business"
         }
         
         personalized_content = content
+        personalization_count = 0
         
         # Apply personalizations
         for generic, personal in personalizations.items():
-            personalized_content = personalized_content.replace(generic, personal)
+            if generic in personalized_content:
+                personalized_content = personalized_content.replace(generic, personal)
+                personalization_count += 1
         
         # Add personal touches to specific sections
         if "Executive Summary" in personalized_content:
             # Add personal greeting at the start
             personalized_content = personalized_content.replace(
-                "Executive Summary",
-                f"Executive Summary\n\n{first_name}, thank you for completing the Exit Ready Snapshot assessment."
+                "Executive Summary\n\n",
+                f"Executive Summary\n\n{first_name}, thank you for taking the time to complete this assessment. "
             )
         
         if "Next Steps" in personalized_content:
             # Make next steps more personal
             personalized_content = personalized_content.replace(
-                "consider scheduling",
-                f"{first_name}, I recommend scheduling"
+                "We recommend scheduling",
+                f"{first_name}, we recommend scheduling"
+            )
+            personalized_content = personalized_content.replace(
+                "Consider scheduling",
+                f"{first_name}, consider scheduling"
             )
         
         return json.dumps({
             "success": True,
             "content": personalized_content,
-            "personalizations_applied": len(personalizations)
+            "personalizations_applied": personalization_count
         })
         
     except Exception as e:
@@ -177,7 +195,8 @@ def validate_final_output(final_report: str) -> str:
             "has_owner_name": False,
             "has_email": False,
             "formatting_issues": [],
-            "ready_for_delivery": True
+            "ready_for_delivery": True,
+            "content_length": len(content.split())
         }
         
         # Check for remaining placeholders
@@ -185,7 +204,8 @@ def validate_final_output(final_report: str) -> str:
         if placeholders:
             validation_results["has_placeholders"] = True
             validation_results["ready_for_delivery"] = False
-            validation_results["formatting_issues"].append(f"Found placeholders: {placeholders}")
+            validation_results["formatting_issues"].append(f"Found unreplaced placeholders: {placeholders}")
+            logger.error(f"Critical: Unreplaced placeholders found: {placeholders}")
         
         # Verify personalization elements are present
         email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
@@ -193,9 +213,12 @@ def validate_final_output(final_report: str) -> str:
             validation_results["has_email"] = True
         
         # Check for proper name (capital letters pattern)
-        name_pattern = r'\b[A-Z][a-z]+\s+[A-Z][a-z]+\b'
-        if re.search(name_pattern, content):
+        # Exclude common business terms
+        name_pattern = r'\b(?!Exit|Ready|Quick|Strategic|Professional|Manufacturing|Services)[A-Z][a-z]+\s+[A-Z][a-z]+\b'
+        potential_names = re.findall(name_pattern, content)
+        if potential_names:
             validation_results["has_owner_name"] = True
+            logger.info(f"Found potential owner names: {potential_names[:3]}")
         
         # Check for common formatting issues
         if '  ' in content:  # Double spaces
@@ -203,6 +226,11 @@ def validate_final_output(final_report: str) -> str:
         
         if '\n\n\n' in content:  # Triple line breaks
             validation_results["formatting_issues"].append("Contains excessive line breaks")
+        
+        # Check content length
+        if validation_results["content_length"] < 1000:
+            validation_results["formatting_issues"].append("Content seems too short")
+            validation_results["ready_for_delivery"] = False
         
         # Determine final status
         if validation_results["formatting_issues"] or validation_results["has_placeholders"]:
@@ -247,17 +275,96 @@ def structure_for_pdf(final_content: str) -> str:
         section_pattern = r'##\s+(.+?)\n(.*?)(?=##|\Z)'
         sections = re.findall(section_pattern, content, re.DOTALL)
         
-        for title, content in sections:
+        for title, section_content in sections:
             pdf_structure["sections"].append({
                 "title": title.strip(),
-                "content": content.strip()
+                "content": section_content.strip()
             })
+        
+        # Add metadata
+        pdf_structure["metadata"] = {
+            "total_words": len(content.split()),
+            "total_sections": len(sections),
+            "has_personalization": bool(metadata.get('owner_name'))
+        }
         
         return json.dumps(pdf_structure)
         
     except Exception as e:
         logger.error(f"Error structuring for PDF: {str(e)}")
         return json.dumps({"error": str(e)})
+
+@tool("process_complete_reinsertion")
+def process_complete_reinsertion(reinsertion_data: str) -> str:
+    """
+    Complete PII reinsertion process: retrieve mapping, reinsert, personalize, and validate
+    """
+    try:
+        data = json.loads(reinsertion_data)
+        uuid = data.get('uuid', '')
+        content = data.get('content', '')
+        
+        # Step 1: Retrieve PII mapping
+        mapping_result = json.loads(retrieve_pii_mapping(uuid))
+        
+        if mapping_result.get('status') != 'found':
+            logger.error(f"Cannot proceed without PII mapping for UUID: {uuid}")
+            return json.dumps({
+                "success": False,
+                "error": "PII mapping not found - cannot personalize report",
+                "content": content
+            })
+        
+        mapping = mapping_result.get('mapping', {})
+        
+        # Step 2: Reinsert personal information
+        reinsertion_result = json.loads(reinsert_personal_info(json.dumps({
+            "content": content,
+            "mapping": mapping
+        })))
+        
+        if not reinsertion_result.get('success'):
+            return json.dumps(reinsertion_result)
+        
+        personalized_content = reinsertion_result.get('content', '')
+        
+        # Step 3: Add personal touches
+        owner_name = mapping.get('[OWNER_NAME]', '')
+        if owner_name:
+            personalization_result = json.loads(personalize_recommendations(json.dumps({
+                "content": personalized_content,
+                "owner_name": owner_name
+            })))
+            personalized_content = personalization_result.get('content', personalized_content)
+        
+        # Step 4: Validate
+        validation_result = json.loads(validate_final_output(json.dumps({
+            "content": personalized_content
+        })))
+        
+        # Step 5: Structure for output
+        final_output = {
+            "uuid": uuid,
+            "success": validation_result.get('ready_for_delivery', False),
+            "content": personalized_content,
+            "metadata": {
+                "owner_name": mapping.get('[OWNER_NAME]', ''),
+                "email": mapping.get('[EMAIL]', ''),
+                "company_name": mapping.get('[COMPANY_NAME]', ''),
+                "total_words": validation_result.get('content_length', 0),
+                "validation": validation_result
+            }
+        }
+        
+        return json.dumps(final_output)
+        
+    except Exception as e:
+        logger.error(f"Error in complete reinsertion process: {str(e)}")
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+            "content": data.get('content', '') if 'data' in locals() else ''
+        })
 
 def create_pii_reinsertion_agent(llm, prompts: Dict[str, Any]) -> Agent:
     """Create the PII reinsertion agent for final personalization"""
@@ -271,7 +378,8 @@ def create_pii_reinsertion_agent(llm, prompts: Dict[str, Any]) -> Agent:
         reinsert_personal_info,
         personalize_recommendations,
         validate_final_output,
-        structure_for_pdf
+        structure_for_pdf,
+        process_complete_reinsertion
     ]
     
     return Agent(
@@ -289,4 +397,11 @@ def create_pii_reinsertion_agent(llm, prompts: Dict[str, Any]) -> Agent:
 def store_pii_mapping(uuid: str, mapping: Dict[str, str]):
     """Store PII mapping for later retrieval"""
     pii_mapping_store[uuid] = mapping
-    logger.info(f"Stored PII mapping for UUID: {uuid}")
+    logger.info(f"Stored PII mapping for UUID: {uuid} with entries: {list(mapping.keys())}")
+    
+# Helper function to clear old mappings (optional, for memory management)
+def clear_old_mappings(older_than_hours: int = 24):
+    """Clear mappings older than specified hours"""
+    # In production, you'd track timestamps and clear old entries
+    # For now, this is a placeholder
+    pass
