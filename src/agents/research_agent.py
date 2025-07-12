@@ -133,15 +133,77 @@ def find_exit_benchmarks(industry: str) -> str:
         "industry": industry
     })
 
+# Add this tool to src/agents/research_agent.py after the existing tools:
+
 @tool("format_research_output")
 def format_research_output(raw_research: str) -> str:
     """
-    Takes raw Perplexity research and formats it into structured output.
-    This tool uses the LLM to parse and structure the research data.
+    Format raw Perplexity research into structured data for other agents.
     """
-    # This will be handled by the agent's LLM to format the raw data
-    # into the expected structure
-    return raw_research
+    try:
+        data = json.loads(raw_research)
+        perplexity_content = data.get('raw_content', '')
+        
+        # This tool helps the agent structure the output
+        # The actual parsing will be done by the agent's LLM
+        
+        output_structure = {
+            "valuation_benchmarks": {
+                "base_EBITDA": "",  # e.g., "4-6x"
+                "base_revenue": "",  # e.g., "1.2-2.0x"
+                "recurring_threshold": "",  # e.g., "60%"
+                "recurring_premium": "",  # e.g., "1-2x EBITDA"
+                "owner_dependence_threshold": "",  # e.g., "14 days"
+                "owner_dependence_discount": "",  # e.g., "20-30%"
+                "concentration_threshold": "",  # e.g., "30%"
+                "concentration_discount": ""  # e.g., "20-30%"
+            },
+            "improvements": {
+                "owner_dependence": {
+                    "example": "",
+                    "timeline_months": 0,
+                    "value_impact": 0.0  # as decimal, e.g., 0.15 for 15%
+                },
+                "revenue_quality": {
+                    "example": "",
+                    "timeline_months": 0,
+                    "value_impact": 0.0
+                },
+                "financial_readiness": {
+                    "example": "",
+                    "timeline_months": 0,
+                    "value_impact": 0.0
+                },
+                "operational_resilience": {
+                    "example": "",
+                    "timeline_months": 0,
+                    "value_impact": 0.0
+                },
+                "growth_value": {
+                    "example": "",
+                    "timeline_months": 0,
+                    "value_impact": 0.0
+                }
+            },
+            "market_conditions": {
+                "buyer_priorities": [],  # List of top 3 priorities
+                "average_sale_time": "",  # e.g., "9-12 months"
+                "key_trend": "",  # Main trend affecting valuations
+                "market_timing": ""  # e.g., "Seller's market" or "Buyer's market"
+            },
+            "sources": []  # List of sources cited
+        }
+        
+        # Return template for agent to fill
+        return json.dumps({
+            "template": output_structure,
+            "instructions": "Parse the Perplexity response and fill this structure with specific data",
+            "perplexity_content": perplexity_content
+        })
+        
+    except Exception as e:
+        logger.error(f"Error formatting research output: {str(e)}")
+        return json.dumps({"error": str(e)})
 
 def create_research_agent(llm, prompts: Dict[str, Any]) -> Agent:
     """Create the research agent for industry analysis"""

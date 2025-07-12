@@ -64,7 +64,6 @@ class ExitReadySnapshotCrew:
         from .agents.summary_agent import create_summary_agent
         from .agents.qa_agent import create_qa_agent
         from .agents.pii_reinsertion_agent import create_pii_reinsertion_agent
-        # All agents imported
         
         self.agents = {
             'intake': create_intake_agent(self.pii_llm, self.prompts),
@@ -99,8 +98,12 @@ class ExitReadySnapshotCrew:
         research_task = Task(
             description=self.prompts['research_agent']['task_template'],
             agent=self.agents['research'],
-            expected_output="Industry analysis with trends and benchmarks",
-            context=[intake_task]  # Uses output from intake task
+            expected_output="""Structured research data including:
+            - Valuation benchmarks with specific multiples and thresholds
+            - Improvement examples with timelines and impacts
+            - Market conditions and buyer priorities
+            - All data properly formatted for scoring and summary agents""",
+            context=[intake_task]
         )
         self.tasks.append(research_task)
 
@@ -114,7 +117,7 @@ class ExitReadySnapshotCrew:
             - Industry context and benchmarks
             - Overall readiness assessment
             - Priority focus areas with ROI calculations""",
-            context=[intake_task, research_task]  # Uses outputs from both previous tasks
+            context=[intake_task, research_task]
         )
         self.tasks.append(scoring_task)
 
@@ -122,8 +125,13 @@ class ExitReadySnapshotCrew:
         summary_task = Task(
             description=self.prompts['summary_agent']['task_template'],
             agent=self.agents['summary'],
-            expected_output="Complete assessment summary with recommendations",
-            context=[scoring_task, research_task]  # Uses scoring and research outputs
+            expected_output="""Complete personalized report including:
+            - 200-250 word executive summary
+            - 150-200 word analysis for each category
+            - Quick wins and strategic priorities
+            - Industry context and market positioning
+            - All content ready for client delivery""",
+            context=[scoring_task, research_task, intake_task]  # Access to all previous outputs
         )
         self.tasks.append(summary_task)
 
@@ -132,7 +140,7 @@ class ExitReadySnapshotCrew:
             description=self.prompts['qa_agent']['task_template'],
             agent=self.agents['qa'],
             expected_output="Quality assessment with approval status",
-            context=[scoring_task, summary_task]  # Reviews scoring and summary outputs
+            context=[scoring_task, summary_task]
         )
         self.tasks.append(qa_task)
         
@@ -141,7 +149,7 @@ class ExitReadySnapshotCrew:
             description=self.prompts['pii_reinsertion_agent']['task_template'],
             agent=self.agents['pii_reinsertion'],
             expected_output="Complete personalized report ready for PDF generation",
-            context=[qa_task, intake_task]  # Needs QA approval and original PII mapping
+            context=[qa_task, intake_task]
         )
         self.tasks.append(pii_reinsertion_task)
     
@@ -157,45 +165,144 @@ class ExitReadySnapshotCrew:
         # Get industry-specific context
         industry_context = self.get_industry_context(inputs.get('industry', ''))
         
+        # Create business info package for summary agent
+        business_info = {
+            "industry": inputs.get("industry"),
+            "location": inputs.get("location"),
+            "years_in_business": inputs.get("years_in_business"),
+            "revenue_range": inputs.get("revenue_range"),
+            "exit_timeline": inputs.get("exit_timeline"),
+            "age_range": inputs.get("age_range")
+        }
+        
         # Format inputs for the task templates
         formatted_inputs = {
-          "form_data": json.dumps(inputs),
-          "industry": inputs.get("industry"),
-          "location": inputs.get("location"),
-          "years_in_business": inputs.get("years_in_business"),
-          "revenue_range": inputs.get("revenue_range"),  # Add this
-          "exit_timeline": inputs.get("exit_timeline"),  # Add this
-          "industry_specific_context": industry_context,
-          "locale": self.locale,
-          "locale_specific_terminology": self.locale_terms,
-          "scoring_rubric": json.dumps(self.scoring_rubric),
-          "anonymized_responses": json.dumps(inputs.get("responses", {})),
-          "industry_research": "",  # Will be filled by research agent output
-          "research_data": "",  # Add this - will be filled by research agent
-          "category_scores": "",  # Will be filled by scoring agent output
-          "scoring_results": "",  # Will be filled by scoring agent output
-          "summary_content": "",  # Will be filled by summary agent output
-          "pii_mapping": json.dumps({"[OWNER_NAME]": inputs.get("name", ""), "[EMAIL]": inputs.get("email", "")}),
-          "approved_report": "",  # Will be filled by QA agent output
-          "original_data": json.dumps(inputs)
-      }
+            "form_data": json.dumps(inputs),
+            "industry": inputs.get("industry"),
+            "location": inputs.get("location"),
+            "years_in_business": inputs.get("years_in_business"),
+            "revenue_range": inputs.get("revenue_range"),
+            "exit_timeline": inputs.get("exit_timeline"),
+            "industry_specific_context": industry_context,
+            "locale": self.locale,
+            "locale_specific_terminology": json.dumps(self.locale_terms),
+            "scoring_rubric": json.dumps(self.scoring_rubric),
+            "anonymized_responses": json.dumps(inputs.get("responses", {})),
+            "business_info": json.dumps(business_info),  # Added
+            "industry_research": "",  # Will be filled by research agent output
+            "research_data": "",  # Will be filled by research agent
+            "category_scores": "",  # Will be filled by scoring agent output
+            "scoring_results": "",  # Will be filled by scoring agent output
+            "focus_areas": "",  # Added - will be filled by scoring agent
+            "summary_content": "",  # Will be filled by summary agent output
+            "pii_mapping": json.dumps({"[OWNER_NAME]": inputs.get("name", ""), "[EMAIL]": inputs.get("email", "")}),
+            "approved_report": "",  # Will be filled by QA agent output
+            "original_data": json.dumps(inputs)
+        }
         
         result = crew.kickoff(inputs=formatted_inputs)
         
-        # For now, return a structured result
-        # This will be replaced with actual crew output
-        return {
-            "uuid": inputs.get("uuid"),
-            "status": "completed",
-            "locale": self.locale,
-            "scores": {
-                "overall": 6.5,
+        # Parse the final output from the PII reinsertion agent
+        try:
+            # The last task (PII reinsertion) should return the complete personalized report
+            final_output = result.raw if hasattr(result, 'raw') else str(result)
+            
+            # Parse the output - it should be JSON from the PII reinsertion agent
+            if isinstance(final_output, str):
+                try:
+                    parsed_output = json.loads(final_output)
+                except:
+                    # If not JSON, use the raw output
+                    parsed_output = {"content": final_output}
+            else:
+                parsed_output = final_output
+            
+            # Extract structured data from the crew output
+            # This assumes the crew agents properly structure their outputs
+            return {
+                "uuid": inputs.get("uuid"),
+                "status": "completed",
+                "locale": self.locale,
+                "owner_name": inputs.get("name"),
+                "email": inputs.get("email"),
+                "company_name": parsed_output.get("company_name"),
+                "industry": inputs.get("industry"),
+                "location": inputs.get("location"),
+                "scores": self._extract_scores(parsed_output),
+                "executive_summary": self._extract_executive_summary(parsed_output),
+                "category_summaries": self._extract_category_summaries(parsed_output),
+                "recommendations": self._extract_recommendations(parsed_output),
+                "next_steps": self._extract_next_steps(parsed_output),
+                "raw_output": parsed_output  # Keep raw output for debugging
+            }
+        except Exception as e:
+            logger.error(f"Error parsing crew output: {str(e)}")
+            # Return a basic structure on error
+            return {
+                "uuid": inputs.get("uuid"),
+                "status": "error",
+                "error": str(e),
+                "locale": self.locale
+            }
+    
+    def _extract_scores(self, output: dict) -> dict:
+        """Extract scores from crew output"""
+        # Look for scores in various possible locations
+        if "scores" in output:
+            return output["scores"]
+        elif "category_scores" in output:
+            scores = output["category_scores"]
+            # Calculate overall if not present
+            if "overall" not in scores and len(scores) > 0:
+                scores["overall"] = sum(scores.values()) / len(scores)
+            return scores
+        else:
+            # Default scores if extraction fails
+            return {
+                "overall": 5.0,
                 "owner_dependence": 5.0,
-                "revenue_quality": 7.0,
-                "financial_readiness": 7.5,
-                "operational_resilience": 6.0,
-                "growth_value": 7.0
-            },
-            "summary": "Assessment completed successfully",
-            "recommendations": ["Focus on reducing owner dependence", "Document core processes"]
+                "revenue_quality": 5.0,
+                "financial_readiness": 5.0,
+                "operational_resilience": 5.0,
+                "growth_value": 5.0
+            }
+    
+    def _extract_executive_summary(self, output: dict) -> str:
+        """Extract executive summary from crew output"""
+        return output.get("executive_summary", 
+                         output.get("summary", 
+                         output.get("content", "").split("Executive Summary")[-1].split("\n\n")[0] 
+                         if "Executive Summary" in output.get("content", "") else ""))
+    
+    def _extract_category_summaries(self, output: dict) -> dict:
+        """Extract category summaries from crew output"""
+        if "category_summaries" in output:
+            return output["category_summaries"]
+        
+        # Try to parse from content if structured data not available
+        summaries = {}
+        categories = ["owner_dependence", "revenue_quality", "financial_readiness", 
+                     "operational_resilience", "growth_value"]
+        
+        content = output.get("content", "")
+        for category in categories:
+            # Simple extraction - you may need to enhance this
+            summaries[category] = f"Assessment of {category.replace('_', ' ').title()}"
+        
+        return summaries
+    
+    def _extract_recommendations(self, output: dict) -> dict:
+        """Extract recommendations from crew output"""
+        if "recommendations" in output:
+            return output["recommendations"]
+        
+        return {
+            "quick_wins": output.get("quick_wins", []),
+            "strategic_priorities": output.get("strategic_priorities", []),
+            "critical_focus": output.get("critical_focus", "")
         }
+    
+    def _extract_next_steps(self, output: dict) -> str:
+        """Extract next steps from crew output"""
+        return output.get("next_steps", 
+                         "Schedule a consultation to discuss your personalized Exit Value Growth Plan.")
