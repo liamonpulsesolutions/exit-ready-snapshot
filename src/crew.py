@@ -108,7 +108,12 @@ class ExitReadySnapshotCrew:
         scoring_task = Task(
             description=self.prompts['scoring_agent']['task_template'],
             agent=self.agents['scoring'],
-            expected_output="Structured scoring with category scores and justifications",
+            expected_output="""Comprehensive scoring output including:
+            - Detailed category scores with breakdowns
+            - Specific strengths and gaps for each category
+            - Industry context and benchmarks
+            - Overall readiness assessment
+            - Priority focus areas with ROI calculations""",
             context=[intake_task, research_task]  # Uses outputs from both previous tasks
         )
         self.tasks.append(scoring_task)
@@ -154,23 +159,26 @@ class ExitReadySnapshotCrew:
         
         # Format inputs for the task templates
         formatted_inputs = {
-            "form_data": json.dumps(inputs),  # Convert to JSON string for tools
-            "industry": inputs.get("industry"),
-            "location": inputs.get("location"),
-            "years_in_business": inputs.get("years_in_business"),
-            "industry_specific_context": industry_context,
-            "locale": self.locale,
-            "locale_specific_terminology": self.locale_terms,
-            "scoring_rubric": json.dumps(self.scoring_rubric),
-            "anonymized_responses": json.dumps(inputs.get("responses", {})),
-            "industry_research": "",  # Will be filled by research agent output
-            "category_scores": "",  # Will be filled by scoring agent output
-            "scoring_results": "",  # Will be filled by scoring agent output
-            "summary_content": "",  # Will be filled by summary agent output
-            "pii_mapping": json.dumps({"[OWNER_NAME]": inputs.get("name", ""), "[EMAIL]": inputs.get("email", "")}),
-            "approved_report": "",  # Will be filled by QA agent output
-            "original_data": json.dumps(inputs)
-        }
+          "form_data": json.dumps(inputs),
+          "industry": inputs.get("industry"),
+          "location": inputs.get("location"),
+          "years_in_business": inputs.get("years_in_business"),
+          "revenue_range": inputs.get("revenue_range"),  # Add this
+          "exit_timeline": inputs.get("exit_timeline"),  # Add this
+          "industry_specific_context": industry_context,
+          "locale": self.locale,
+          "locale_specific_terminology": self.locale_terms,
+          "scoring_rubric": json.dumps(self.scoring_rubric),
+          "anonymized_responses": json.dumps(inputs.get("responses", {})),
+          "industry_research": "",  # Will be filled by research agent output
+          "research_data": "",  # Add this - will be filled by research agent
+          "category_scores": "",  # Will be filled by scoring agent output
+          "scoring_results": "",  # Will be filled by scoring agent output
+          "summary_content": "",  # Will be filled by summary agent output
+          "pii_mapping": json.dumps({"[OWNER_NAME]": inputs.get("name", ""), "[EMAIL]": inputs.get("email", "")}),
+          "approved_report": "",  # Will be filled by QA agent output
+          "original_data": json.dumps(inputs)
+      }
         
         result = crew.kickoff(inputs=formatted_inputs)
         

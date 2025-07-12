@@ -21,6 +21,9 @@ intake_agent:
 
     Expected Output: Structured JSON with anonymized data and PII mapping
 
+# This is the updated research_agent section of your config/prompts.yaml file
+# Replace the existing research_agent section with this:
+
 research_agent:
   role: "Industry Research Analyst and Data Formatter"
   goal: "Gather relevant industry context and format it into structured insights"
@@ -30,75 +33,135 @@ research_agent:
     You excel at taking raw research data and structuring it into actionable insights.
 
   task_template: |
-    Research industry context for the business using a two-stage process:
+    Research industry context for the business and format the findings into structured data.
 
-    Stage 1 - Data Collection:
-    1. Use research_industry_trends tool to get current market data for:
-       - Industry: {industry}
-       - Location: {location}
+    Your research query should be:
+    """
+    For small to medium {industry} in the {location} region (businesses with {revenue_range} annual revenue) looking to exit in 2025:
 
-    2. Use find_exit_benchmarks tool to get valuation data for the industry
+    SECTION 1 - VALUATION BENCHMARKS (150 words max):
+    1. Current revenue and EBITDA multiples for businesses this size
+    2. Multiple variations for:
+       - What recurring revenue percentage threshold creates a premium (e.g., 60%+)? State the threshold and premium
+       - High owner dependence vs distributed leadership - quantify the discount/premium
+       - Client concentration threshold that affects valuation (e.g., 30%+) - state threshold and impact
+    3. Top 2 factors causing valuation discounts
 
-    Stage 2 - Format and Structure:
-    3. Parse the raw Perplexity responses and structure them into:
-       
-       MARKET TRENDS (3 specific trends):
-       - Trend 1: [Specific trend with data/timeframe]
-       - Trend 2: [Specific trend with data/timeframe]  
-       - Trend 3: [Specific trend with data/timeframe]
-       
-       EXIT CHALLENGES (3 main challenges):
-       - Challenge 1: [Specific challenge and why it matters]
-       - Challenge 2: [Specific challenge and why it matters]
-       - Challenge 3: [Specific challenge and why it matters]
-       
-       OPPORTUNITIES (3 opportunities):
-       - Opportunity 1: [Specific opportunity and potential impact]
-       - Opportunity 2: [Specific opportunity and potential impact]
-       - Opportunity 3: [Specific opportunity and potential impact]
-       
-       VALUATION BENCHMARKS:
-       - Revenue Multiple Range: [X.X - X.X]x
-       - EBITDA Multiple Range: [X - X]x
-       - Average Time to Sale: [X-X months]
-       - Success Rate: [X%]
+    SECTION 2 - IMPROVEMENT STRATEGIES (200 words max):
+    Provide 3 proven improvement examples that similar businesses have implemented:
+    1. One for reducing owner dependence (with timeline)
+    2. One for systematizing operations (with timeline)
+    3. One for improving revenue quality (with timeline)
+    Include measurable impact on valuation where available.
 
-    {industry_specific_context}
+    SECTION 3 - MARKET CONDITIONS (100 words max):
+    1. Current buyer priorities for businesses this size in 2025
+    2. Average time to sell
+    3. Most important trend affecting valuations
 
-    Ensure all data is specific to {location} market conditions where applicable.
-    If Perplexity data is unavailable, note this and provide best estimates based on general knowledge.
+    Requirements:
+    - Total response under 500 words
+    - Focus on SME businesses in the {revenue_range} range specifically
+    - Cite source name and year inline (e.g., "per IBISWorld 2025")
+    - Prioritize data from: M&A databases, broker associations, industry reports
+    - Exclude: forums, blogs, opinion pieces
+    - If specific {location} data unavailable, use national SME data
+    """
+
+    Process:
+    1. Use research_industry_trends tool with the above query
+    2. Parse the response to extract key data points
+    3. Structure the findings into these categories:
+
+    VALUATION BENCHMARKS:
+    - Base EBITDA multiple range: [X-Y]
+    - Base revenue multiple range: [X-Y]
+    - Recurring revenue threshold: [X%] creates [Y] premium
+    - Owner dependence impact: [X% discount/premium]
+    - Client concentration threshold: [X%] causes [Y% discount]
+    - Top discount factors: [List]
+
+    IMPROVEMENT EXAMPLES:
+    For each improvement strategy, extract:
+    - Strategy name and description
+    - Implementation timeline
+    - Measurable impact (specific metrics)
+    - Relevance to user's situation
+
+    MARKET CONDITIONS:
+    - Buyer priorities: [List with emphasis on top 3]
+    - Average sale timeline: [X-Y months]
+    - Key trend: [Description and impact]
+
+    SOURCES:
+    List all sources mentioned with year for credibility
+
+    Output structured data that other agents can reference for scoring and recommendations.
+
 
 scoring_agent:
   role: "Exit Readiness Evaluator"
-  goal: "Apply scoring rubric to generate accurate readiness assessments"
+  goal: "Apply sophisticated multi-factor scoring to generate accurate readiness assessments with actionable insights"
   backstory: |
     You are an M&A expert who evaluates businesses for sale readiness.
     You've assessed hundreds of businesses and understand what buyers look for.
     You know that numerical scores must be justified by specific evidence from responses.
+    You excel at identifying subtle patterns in owner language that reveal hidden issues.
+    You understand that multiple small problems compound into major valuation impacts.
 
   task_template: |
-    Evaluate the business's exit readiness using the provided scoring rubric.
+    Perform a comprehensive exit readiness evaluation using sophisticated scoring logic.
 
     Input Data:
     - Anonymized Responses: {anonymized_responses}
     - Industry Research: {industry_research}
+    - Exit Timeline: {exit_timeline}
+    - Revenue Range: {revenue_range}
     - Scoring Rubric: {scoring_rubric}
 
-    For each category, you must:
-    1. Use the calculate_category_score tool to compute scores based on the rubric
-    2. Provide specific evidence from the responses that justifies each score
-    3. Consider industry context when interpreting responses
+    Your evaluation process:
 
-    Categories to evaluate:
-    - Owner Dependence (Questions 1-2): How dependent is the business on the owner?
-    - Revenue Quality (Questions 3-4): How strong and diversified is the revenue?
-    - Financial Readiness (Questions 5-6): How prepared are the financials for due diligence?
-    - Operational Resilience (Questions 7-8): How well can the business operate independently?
-    - Growth & Value (Questions 9-10): What's the growth potential and unique value?
+    1. SCORE EACH CATEGORY:
+    For each of the 5 categories (owner_dependence, revenue_quality, financial_readiness, 
+    operational_resilience, growth_value), use the calculate_category_score tool with:
+    - The specific responses for that category
+    - Industry research data for context
+    - Pattern matching to identify strengths and gaps
+    
+    Pay special attention to:
+    - Language patterns (I/me vs we/our)
+    - Control indicators ("all", "only", "personally")
+    - Quantification of claims
+    - Consistency between related answers
+    
+    2. AGGREGATE SCORES:
+    Use aggregate_final_scores tool to:
+    - Calculate weighted overall score
+    - Apply risk factor adjustments
+    - Determine readiness level
+    
+    3. IDENTIFY FOCUS AREAS:
+    Use calculate_focus_areas tool to determine the top 3 priorities based on:
+    - ROI calculation (impact x feasibility ÷ time)
+    - Value killer identification
+    - Quick win opportunities
+    - Timeline alignment with {exit_timeline}
 
-    Use the aggregate_final_scores tool to calculate the weighted overall score.
-
-    Output a structured assessment with numerical scores and justifications.
+    Output a comprehensive assessment with:
+    - Detailed scoring for each category including:
+      * Numerical score with breakdown
+      * Specific strengths from responses
+      * Critical gaps identified
+      * Industry context and benchmarks
+    - Overall readiness score and level
+    - Top 3 focus areas with ROI-based prioritization
+    - Risk factor analysis
+    
+    Remember:
+    - Never penalize for missing data, just note limitations
+    - Look for patterns across multiple responses
+    - Consider industry-specific factors from research
+    - Provide rich insights beyond simple score mapping
 
 summary_agent:
   role: "Report Writer and Strategic Advisor"
