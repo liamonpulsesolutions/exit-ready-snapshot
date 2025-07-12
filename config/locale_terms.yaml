@@ -1,0 +1,40 @@
+# Locale-specific terminology and formatting
+
+us:
+  currency: "USD"
+  currency_symbol: "$"
+  business_terms:
+    revenue: "revenue"
+    turnover: "revenue"
+    valuation: "valuation"
+    solicitor: "attorney"
+    accountant: "CPA"
+  formatting:
+    date_format: "MM/DD/YYYY"
+    number_format: "1,000.00"
+
+uk:
+  currency: "GBP"
+  currency_symbol: "£"
+  business_terms:
+    revenue: "turnover"
+    turnover: "turnover"
+    valuation: "valuation"
+    solicitor: "solicitor"
+    accountant: "chartered accountant"
+  formatting:
+    date_format: "DD/MM/YYYY"
+    number_format: "1,000.00"
+
+au:
+  currency: "AUD"
+  currency_symbol: "$"
+  business_terms:
+    revenue: "revenue"
+    turnover: "turnover"
+    valuation: "valuation"
+    solicitor: "solicitor"
+    accountant: "accountant"
+  formatting:
+    date_format: "DD/MM/YYYY"
+    number_format: "1,000.00"

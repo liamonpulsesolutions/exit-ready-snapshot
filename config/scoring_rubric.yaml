@@ -1,0 +1,111 @@
+# Exit Ready Snapshot Scoring Rubric
+# Default weights - will be overridden by industry-specific weights when available
+
+categories:
+  owner_dependence:
+    weight: 0.25
+    questions: [1, 2]
+    scoring_criteria:
+      high_risk:
+        score_range: [1, 3]
+        indicators:
+          - "Owner handles all critical tasks"
+          - "Business cannot operate >3 days without owner"
+      moderate_risk:
+        score_range: [4, 7]
+        indicators:
+          - "Some delegation but key decisions remain"
+          - "Can operate 1-2 weeks independently"
+      low_risk:
+        score_range: [8, 10]
+        indicators:
+          - "Strong systems and delegation"
+          - "Can operate >1 month independently"
+
+  revenue_quality:
+    weight: 0.25
+    questions: [3, 4]
+    scoring_criteria:
+      high_risk:
+        score_range: [1, 3]
+        indicators:
+          - "High customer concentration (>50% from top 3)"
+          - "Minimal recurring revenue (<20%)"
+      moderate_risk:
+        score_range: [4, 7]
+        indicators:
+          - "Moderate concentration (25-50%)"
+          - "Some recurring revenue (20-60%)"
+      low_risk:
+        score_range: [8, 10]
+        indicators:
+          - "Well diversified (<25% concentration)"
+          - "Strong recurring revenue (>60%)"
+
+  financial_readiness:
+    weight: 0.20
+    questions: [5, 6]
+    scoring_criteria:
+      high_risk:
+        score_range: [1, 3]
+        indicators:
+          - "Low confidence in financial records"
+          - "Declining or unknown profit margins"
+      moderate_risk:
+        score_range: [4, 7]
+        indicators:
+          - "Moderate financial documentation"
+          - "Stable profit margins"
+      low_risk:
+        score_range: [8, 10]
+        indicators:
+          - "Audit-ready financials"
+          - "Improving profit margins"
+
+  operational_resilience:
+    weight: 0.15
+    questions: [7, 8]
+    scoring_criteria:
+      high_risk:
+        score_range: [1, 3]
+        indicators:
+          - "Critical knowledge in one person"
+          - "No documented processes"
+      moderate_risk:
+        score_range: [4, 7]
+        indicators:
+          - "Some key person dependencies"
+          - "Basic documentation exists"
+      low_risk:
+        score_range: [8, 10]
+        indicators:
+          - "Knowledge well distributed"
+          - "Comprehensive documentation"
+
+  growth_value:
+    weight: 0.15
+    questions: [9, 10]
+    scoring_criteria:
+      high_risk:
+        score_range: [1, 3]
+        indicators:
+          - "No clear value drivers"
+          - "Limited growth potential"
+      moderate_risk:
+        score_range: [4, 7]
+        indicators:
+          - "Some unique aspects"
+          - "Moderate growth opportunities"
+      low_risk:
+        score_range: [8, 10]
+        indicators:
+          - "Strong competitive advantages"
+          - "Significant untapped potential"
+
+overall_scoring:
+  calculation: "weighted_average"
+  thresholds:
+    not_ready: [0, 4.0]
+    needs_work: [4.1, 6.5]
+    approaching_ready: [6.6, 8.0]
+    exit_ready: [8.1, 10.0]

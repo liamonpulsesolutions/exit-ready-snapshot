@@ -1,0 +1,49 @@
+# Industry-specific prompt additions
+# These are placeholders - will be filled based on research
+
+professional_services:
+  research_context: |
+    # TODO: Add specific context for professional services
+    # Consider: Client retention, recurring contracts, knowledge transfer
+
+  scoring_adjustments: |
+    # TODO: Add scoring adjustments
+    # Consider: Higher weight on client concentration
+
+retail:
+  research_context: |
+    # TODO: Add specific context for retail
+    # Consider: Inventory management, location value, online presence
+
+  scoring_adjustments: |
+    # TODO: Add scoring adjustments
+    # Consider: Lower weight on owner presence for established systems
+
+healthcare:
+  research_context: |
+    # TODO: Add specific context for healthcare
+    # Consider: Regulatory compliance, patient retention, provider contracts
+
+  scoring_adjustments: |
+    # TODO: Add scoring adjustments
+    # Consider: Higher weight on compliance and documentation
+
+manufacturing:
+  research_context: |
+    # TODO: Add specific context for manufacturing
+    # Consider: Equipment value, supply chain, customer contracts
+
+  scoring_adjustments: |
+    # TODO: Add scoring adjustments
+    # Consider: Higher weight on operational systems
+
+technology:
+  research_context: |
+    # TODO: Add specific context for technology
+    # Consider: IP ownership, technical debt, team retention
+
+  scoring_adjustments: |
+    # TODO: Add scoring adjustments
+    # Consider: Higher weight on team and IP
+
+# Add more industries as needed
