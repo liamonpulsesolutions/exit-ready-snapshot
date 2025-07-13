@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 pii_mapping_store = {}
 
 @tool("retrieve_pii_mapping")
-def retrieve_pii_mapping(uuid: str) -> str:
+def retrieve_pii_mapping(uuid) -> str:
     """
     Retrieve the PII mapping for a specific assessment UUID.
     CRITICAL: This must use the actual mapping from intake agent, not mock data.
@@ -56,7 +56,7 @@ def retrieve_pii_mapping(uuid: str) -> str:
         })
 
 @tool("reinsert_personal_info")
-def reinsert_personal_info(content_with_mapping: str) -> str:
+def reinsert_personal_info(content_with_mapping) -> str:
     """
     Replace all placeholders with actual personal information.
     Ensures natural language flow and proper formatting.
@@ -139,7 +139,7 @@ def reinsert_personal_info(content_with_mapping: str) -> str:
         return json.dumps({"error": str(e), "success": False})
 
 @tool("personalize_recommendations")
-def personalize_recommendations(recommendation_data: str) -> str:
+def personalize_recommendations(recommendation_data) -> str:
     """
     Add personal touches to recommendations and key sections.
     Makes the report feel tailored to the specific owner.
@@ -219,7 +219,7 @@ def personalize_recommendations(recommendation_data: str) -> str:
         return json.dumps({"error": str(e), "success": False})
 
 @tool("validate_final_output")
-def validate_final_output(final_report: str) -> str:
+def validate_final_output(final_report) -> str:
     """
     Perform final validation to ensure all personalizations are complete
     and the report is ready for delivery.
@@ -290,7 +290,7 @@ def validate_final_output(final_report: str) -> str:
         })
 
 @tool("structure_for_pdf")
-def structure_for_pdf(final_content: str) -> str:
+def structure_for_pdf(final_content) -> str:
     """
     Structure the final report content for PDF generation.
     Ensures proper formatting and section organization.
@@ -342,7 +342,7 @@ def structure_for_pdf(final_content: str) -> str:
         return json.dumps({"error": str(e)})
 
 @tool("process_complete_reinsertion")
-def process_complete_reinsertion(reinsertion_data: str) -> str:
+def process_complete_reinsertion(reinsertion_data) -> str:
     """
     Complete PII reinsertion process: retrieve mapping, reinsert, personalize, and validate
     """

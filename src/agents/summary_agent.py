@@ -8,12 +8,12 @@ import re
 logger = logging.getLogger(__name__)
 
 @tool("generate_category_summary")
-def generate_category_summary(category_data: str) -> str:
+def generate_category_summary(category_data) -> str:
     """
     Generate a comprehensive 150-200 word summary for a specific scoring category.
     """
     try:
-        data = json.loads(category_data)
+        data = json.loads(category_data) if isinstance(category_data, str) else category_data
         category = data.get('category', '')
         score_data = data.get('score_data', {})
         industry_context = data.get('industry_context', {})
@@ -175,12 +175,12 @@ def generate_category_recommendations(category: str, score: float, gaps: List[st
     return recommendations[:3]  # Return top 3
 
 @tool("create_executive_summary")
-def create_executive_summary(assessment_data: str) -> str:
+def create_executive_summary(assessment_data) -> str:
     """
     Create a compelling 200-250 word executive summary that captures the key insights.
     """
     try:
-        data = json.loads(assessment_data)
+        data = json.loads(assessment_data) if isinstance(assessment_data, str) else assessment_data
         overall_score = data.get('overall_score', 5.0)
         readiness_level = data.get('readiness_level', 'Needs Work')
         category_scores = data.get('category_scores', {})
@@ -252,12 +252,12 @@ def get_overall_score_interpretation(score: float) -> str:
         return "Your business requires substantial preparation, but with dedication can be transformed into an attractive acquisition"
 
 @tool("generate_recommendations")
-def generate_recommendations(full_assessment: str) -> str:
+def generate_recommendations(full_assessment) -> str:
     """
     Generate comprehensive recommendations section with Quick Wins, Strategic Priorities, and Critical Focus.
     """
     try:
-        data = json.loads(full_assessment)
+        data = json.loads(full_assessment) if isinstance(full_assessment, str) else full_assessment
         focus_areas = data.get('focus_areas', {})
         category_scores = data.get('category_scores', {})
         exit_timeline = data.get('business_info', {}).get('exit_timeline', '')
@@ -478,12 +478,12 @@ def calculate_expected_roi(focus_areas: Dict) -> str:
         return "Significant value increase expected"
 
 @tool("create_industry_context")
-def create_industry_context(industry_data: str) -> str:
+def create_industry_context(industry_data) -> str:
     """
     Create industry context section using research data.
     """
     try:
-        data = json.loads(industry_data)
+        data = json.loads(industry_data) if isinstance(industry_data, str) else industry_data
         research_findings = data.get('research_findings', {})
         business_info = data.get('business_info', {})
         scores = data.get('scores', {})
@@ -603,12 +603,12 @@ def assess_timeline_reality(exit_timeline: str, scores: Dict) -> str:
         return "Sufficient time for systematic improvements"
 
 @tool("structure_final_report")
-def structure_final_report(complete_data: str) -> str:
+def structure_final_report(complete_data) -> str:
     """
     Structure all components into final report format for PDF generation.
     """
     try:
-        data = json.loads(complete_data)
+        data = json.loads(complete_data) if isinstance(complete_data, str) else complete_data
         
         # Extract all components
         executive_summary = data.get('executive_summary', {})

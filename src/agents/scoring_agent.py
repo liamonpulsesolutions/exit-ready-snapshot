@@ -61,11 +61,25 @@ def analyze_pronoun_usage(text: str) -> Dict[str, Any]:
         return {"ratio": ratio, "pattern": "balanced"}
 
 @tool("calculate_category_score")
-def calculate_category_score(category_data: str) -> str:
+def calculate_category_score(category_data=None) -> str:
     """
     Calculate sophisticated score for a category using multiple factors
     """
     try:
+        logger.info(f"=== CALCULATE CATEGORY SCORE CALLED ===")
+        logger.info(f"Input type: {type(category_data)}")
+        logger.info(f"Input preview: {str(category_data)[:200] if category_data else 'No data provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments
+        if category_data is None:
+            logger.warning("No category data provided - using default scoring")
+            return json.dumps({
+                "error": "No category data provided",
+                "score": 5.0,
+                "gaps": ["Unable to analyze - no data"],
+                "strengths": []
+            })
+        
         # Use safe JSON parsing
         data = safe_parse_json(category_data, {}, "calculate_category_score")
         if not data:
@@ -726,11 +740,23 @@ def score_growth_value(responses: Dict[str, str], research_data: Dict[str, Any])
     }
 
 @tool("aggregate_final_scores")
-def aggregate_final_scores(all_scores: str) -> str:
+def aggregate_final_scores(all_scores=None) -> str:
     """
     Calculate weighted overall score and readiness level
     """
     try:
+        logger.info(f"=== AGGREGATE FINAL SCORES CALLED ===")
+        logger.info(f"Input type: {type(all_scores)}")
+        
+        # Handle case where CrewAI doesn't pass any arguments
+        if all_scores is None:
+            logger.warning("No scores data provided - using defaults")
+            return json.dumps({
+                "error": "No scores data provided",
+                "overall_score": 5.0,
+                "readiness_level": "Unable to Calculate"
+            })
+        
         # Use safe JSON parsing
         data = safe_parse_json(all_scores, {}, "aggregate_final_scores")
         if not data:
@@ -813,11 +839,22 @@ def aggregate_final_scores(all_scores: str) -> str:
         })
 
 @tool("calculate_focus_areas")
-def calculate_focus_areas(assessment_data: str) -> str:
+def calculate_focus_areas(assessment_data=None) -> str:
     """
     Determine priority focus areas based on ROI calculation
     """
     try:
+        logger.info(f"=== CALCULATE FOCUS AREAS CALLED ===")
+        logger.info(f"Input type: {type(assessment_data)}")
+        
+        # Handle case where CrewAI doesn't pass any arguments
+        if assessment_data is None:
+            logger.warning("No assessment data provided - using defaults")
+            return json.dumps({
+                "error": "No assessment data provided",
+                "primary_focus": None
+            })
+        
         # Use safe JSON parsing
         data = safe_parse_json(assessment_data, {}, "calculate_focus_areas")
         if not data:

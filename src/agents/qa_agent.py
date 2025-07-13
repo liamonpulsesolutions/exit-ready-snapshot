@@ -9,7 +9,7 @@ from ..utils.json_helper import safe_parse_json
 logger = logging.getLogger(__name__)
 
 @tool("check_scoring_consistency")
-def check_scoring_consistency(scoring_data: str) -> str:
+def check_scoring_consistency(scoring_data) -> str:
     """
     Verify that scores align with their justifications and responses.
     Check for logical consistency across categories.
@@ -94,7 +94,7 @@ def check_scoring_consistency(scoring_data: str) -> str:
         return json.dumps({"error": str(e), "consistent": False})
 
 @tool("verify_content_quality")
-def verify_content_quality(content_data: str) -> str:
+def verify_content_quality(content_data) -> str:
     """
     Check content for completeness, clarity, and professional tone.
     Identify any placeholder text or generic content.
@@ -202,7 +202,7 @@ def verify_content_quality(content_data: str) -> str:
         return json.dumps({"error": str(e), "quality_acceptable": False})
 
 @tool("scan_for_pii")
-def scan_for_pii(full_content: str) -> str:
+def scan_for_pii(full_content) -> str:
     """
     Scan all content for any remaining PII that wasn't properly anonymized.
     This is critical for privacy compliance.
@@ -280,7 +280,7 @@ def scan_for_pii(full_content: str) -> str:
         return json.dumps({"error": str(e), "pii_compliant": False})
 
 @tool("validate_report_structure")
-def validate_report_structure(report_data: str) -> str:
+def validate_report_structure(report_data) -> str:
     """
     Ensure the report has all required sections and proper structure.
     """

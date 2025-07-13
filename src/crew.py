@@ -42,17 +42,24 @@ class ExitReadySnapshotCrew:
     
     def setup_llms(self):
         """Configure LLMs for different agent types"""
-        # Use GPT-4.1 for main analysis agents
+        # Use GPT-4.1 mini for main analysis agents (scoring and summary)
         self.analysis_llm = ChatOpenAI(
-            model="gpt-4.1",
-            temperature=0.7,
+            model="gpt-4.1-mini",
+            temperature=0.1,  # Very low for consistent business analysis
             openai_api_key=os.getenv('OPENAI_API_KEY')
         )
         
-        # Use GPT-4.1 mini for PII-handling agents (will swap to Ollama later)
+        # Use GPT-4.1 nano for PII-handling agents (much cheaper for simple tasks)
         self.pii_llm = ChatOpenAI(
+            model="gpt-4.1-nano",
+            temperature=0.1,  # Minimal temperature for maximum consistency
+            openai_api_key=os.getenv('OPENAI_API_KEY')
+        )
+        
+        # Research agent uses GPT-4.1 mini (data formatting, not complex research)
+        self.research_llm = ChatOpenAI(
             model="gpt-4.1-mini",
-            temperature=0.3,  # Lower temperature for more consistent PII handling
+            temperature=0.1,  # Consistent data parsing and formatting
             openai_api_key=os.getenv('OPENAI_API_KEY')
         )
     
@@ -67,15 +74,22 @@ class ExitReadySnapshotCrew:
         from .agents.pii_reinsertion_agent import create_pii_reinsertion_agent
         
         self.agents = {
-            'intake': create_intake_agent(self.pii_llm, self.prompts),
-            'research': create_research_agent(self.analysis_llm, self.prompts),  # Uses GPT-4.1
-            'scoring': create_scoring_agent(self.analysis_llm, self.prompts, self.scoring_rubric),
-            'summary': create_summary_agent(self.analysis_llm, self.prompts),
-            'qa': create_qa_agent(self.pii_llm, self.prompts),  # Uses mini for efficiency
-            'pii_reinsertion': create_pii_reinsertion_agent(self.pii_llm, self.prompts)
+            'intake': create_intake_agent(self.pii_llm, self.prompts),              # GPT-4.1 nano
+            'research': create_research_agent(self.research_llm, self.prompts),     # GPT-4.1 mini
+            'scoring': create_scoring_agent(self.analysis_llm, self.prompts, self.scoring_rubric),  # GPT-4.1 mini
+            'summary': create_summary_agent(self.analysis_llm, self.prompts),      # GPT-4.1 mini
+            'qa': create_qa_agent(self.pii_llm, self.prompts),                     # GPT-4.1 nano
+            'pii_reinsertion': create_pii_reinsertion_agent(self.pii_llm, self.prompts)  # GPT-4.1 nano
         }
         
         logger.info(f"Initialized {len(self.agents)} agents for locale: {self.locale}")
+        logger.info("LLM Configuration:")
+        logger.info("  - Research Agent: GPT-4.1 mini (data formatting)")
+        logger.info("  - Scoring Agent: GPT-4.1 mini (analysis)")
+        logger.info("  - Summary Agent: GPT-4.1 mini (content generation)")
+        logger.info("  - Intake Agent: GPT-4.1 nano (PII handling)")
+        logger.info("  - QA Agent: GPT-4.1 nano (validation)")
+        logger.info("  - PII Reinsertion Agent: GPT-4.1 nano (text replacement)")
     
     def get_industry_context(self, industry: str) -> str:
         """Get industry-specific context if available"""
@@ -87,7 +101,7 @@ class ExitReadySnapshotCrew:
         """Define the task pipeline using modular templates"""
         self.tasks = []
         
-        # Task 1: Intake and PII Processing
+        # Task 1: Intake and PII Processing (GPT-4.1 nano)
         intake_task = Task(
             description=self.prompts['intake_agent']['task_template'],
             agent=self.agents['intake'],
@@ -95,7 +109,7 @@ class ExitReadySnapshotCrew:
         )
         self.tasks.append(intake_task)
         
-        # Task 2: Industry Research
+        # Task 2: Industry Research (GPT-4.1 mini)
         research_task = Task(
             description=self.prompts['research_agent']['task_template'],
             agent=self.agents['research'],
@@ -108,7 +122,7 @@ class ExitReadySnapshotCrew:
         )
         self.tasks.append(research_task)
 
-        # Task 3: Scoring and Evaluation
+        # Task 3: Scoring and Evaluation (GPT-4.1 mini)
         scoring_task = Task(
             description=self.prompts['scoring_agent']['task_template'],
             agent=self.agents['scoring'],
@@ -122,7 +136,7 @@ class ExitReadySnapshotCrew:
         )
         self.tasks.append(scoring_task)
 
-        # Task 4: Summary and Recommendations
+        # Task 4: Summary and Recommendations (GPT-4.1 mini)
         summary_task = Task(
             description=self.prompts['summary_agent']['task_template'],
             agent=self.agents['summary'],
@@ -136,7 +150,7 @@ class ExitReadySnapshotCrew:
         )
         self.tasks.append(summary_task)
 
-        # Task 5: Quality Assurance
+        # Task 5: Quality Assurance (GPT-4.1 nano)
         qa_task = Task(
             description=self.prompts['qa_agent']['task_template'],
             agent=self.agents['qa'],
@@ -145,7 +159,7 @@ class ExitReadySnapshotCrew:
         )
         self.tasks.append(qa_task)
         
-        # Task 6: PII Reinsertion and Final Personalization
+        # Task 6: PII Reinsertion and Final Personalization (GPT-4.1 nano)
         pii_reinsertion_task = Task(
             description=self.prompts['pii_reinsertion_agent']['task_template'],
             agent=self.agents['pii_reinsertion'],

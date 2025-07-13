@@ -14,7 +14,7 @@ sheets_logger = GoogleSheetsLogger()
 pii_detector = PIIDetector()
 
 @tool("validate_form_data")
-def validate_form_data(form_data_str: str) -> str:
+def validate_form_data(form_data_str) -> str:
     """
     Validate that all required form fields are present and properly formatted.
     Input should be a JSON string representation of the form data.
@@ -67,7 +67,7 @@ def validate_form_data(form_data_str: str) -> str:
     return json.dumps({"valid": True, "data": form_data})
 
 @tool("detect_and_redact_pii")
-def detect_and_redact_pii_tool(text: str) -> str:
+def detect_and_redact_pii_tool(text) -> str:
     """Detect and redact PII from text, returning anonymized text and mapping"""
     if not text or text.strip() == "":
         return json.dumps({
@@ -80,7 +80,7 @@ def detect_and_redact_pii_tool(text: str) -> str:
     return json.dumps(result)
 
 @tool("log_to_crm")
-def log_to_crm_tool(user_data: str) -> str:
+def log_to_crm_tool(user_data) -> str:
     """Log user data to Google Sheets CRM"""
     try:
         user_data = safe_parse_json(user_data, {}, "log_to_crm")
@@ -94,7 +94,7 @@ def log_to_crm_tool(user_data: str) -> str:
         return json.dumps({"status": "error", "message": str(e)})
 
 @tool("log_responses")
-def log_responses_tool(data: str) -> str:
+def log_responses_tool(data) -> str:
     """Log anonymized responses to Google Sheets"""
     try:
         data = safe_parse_json(data, {}, "log_responses")
@@ -110,7 +110,7 @@ def log_responses_tool(data: str) -> str:
         return json.dumps({"status": "error", "message": str(e)})
 
 @tool("store_pii_mapping")
-def store_pii_mapping_tool(mapping_data: str) -> str:
+def store_pii_mapping_tool(mapping_data) -> str:
     """Store PII mapping for later retrieval by reinsertion agent"""
     try:
         from ..agents.pii_reinsertion_agent import store_pii_mapping
@@ -146,7 +146,7 @@ def store_pii_mapping_tool(mapping_data: str) -> str:
         })
 
 @tool("process_complete_form")
-def process_complete_form(form_data_str: str) -> str:
+def process_complete_form(form_data_str) -> str:
     """
     Complete intake processing: validate, detect PII, redact, and prepare output
     """
