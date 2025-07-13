@@ -6,83 +6,9 @@ import logging
 import json
 import os
 import requests
-from datetime import datetime
 from ..utils.json_helper import safe_parse_json
 from ..utils.tool_input_validator import validate_and_extract_tool_input
 
-# ========== DEBUG SETUP ==========
-DEBUG_MODE = os.getenv('CREWAI_DEBUG', 'false').lower() == 'true'
-
-class DebugFileLogger:
-    def __init__(self, agent_name: str):
-        self.agent_name = agent_name
-        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_dir = "debug_logs"
-        os.makedirs(self.log_dir, exist_ok=True)
-        
-        # Create debug file
-        self.debug_file = os.path.join(
-            self.log_dir, 
-            f"{agent_name}_{self.session_id}_debug.log"
-        )
-        
-        # Create structured output file
-        self.output_file = os.path.join(
-            self.log_dir,
-            f"{agent_name}_{self.session_id}_output.json"
-        )
-        
-        self.outputs = []
-        
-        # Write header
-        with open(self.debug_file, 'w') as f:
-            f.write(f"=== {agent_name.upper()} DEBUG LOG ===\n")
-            f.write(f"Session: {self.session_id}\n")
-            f.write(f"Started: {datetime.now().isoformat()}\n")
-            f.write("=" * 50 + "\n\n")
-    
-    def log(self, category: str, message: str, data: Any = None):
-        timestamp = datetime.now().isoformat()
-        with open(self.debug_file, 'a') as f:
-            f.write(f"[{timestamp}] {category}: {message}\n")
-            if data:
-                f.write(f"  Data Type: {type(data)}\n")
-                f.write(f"  Data Content: {repr(data)[:500]}...\n")
-                if isinstance(data, str):
-                    try:
-                        parsed = json.loads(data)
-                        f.write(f"  Parsed JSON: {json.dumps(parsed, indent=2)[:500]}...\n")
-                    except:
-                        f.write("  Not valid JSON\n")
-            f.write("-" * 30 + "\n")
-    
-    def save_output(self, tool_name: str, input_data: Any, output_data: Any):
-        output_entry = {
-            "timestamp": datetime.now().isoformat(),
-            "tool": tool_name,
-            "input": {
-                "type": str(type(input_data)),
-                "content": str(input_data)[:1000]
-            },
-            "output": {
-                "type": str(type(output_data)),
-                "content": str(output_data)[:1000]
-            }
-        }
-        self.outputs.append(output_entry)
-        
-        # Save to file
-        with open(self.output_file, 'w') as f:
-            json.dump({
-                "agent": self.agent_name,
-                "session": self.session_id,
-                "outputs": self.outputs
-            }, f, indent=2)
-
-# Global logger instance
-debug_logger = DebugFileLogger("research_agent") if DEBUG_MODE else None
-
-# Regular logger
 logger = logging.getLogger(__name__)
 
 class PerplexityResearcher:
@@ -169,7 +95,7 @@ class ResearchIndustryTrendsTool(BaseTool):
     name: str = "research_industry_trends"
     description: str = """
     Research current trends and challenges for a specific industry and location.
-    Returns formatted research findings as text that agents can understand.
+    Returns formatted research findings that agents can understand and use.
     
     Input should be JSON string containing industry, location, and revenue_range:
     {"industry": "Professional Services", "location": "US", "revenue_range": "$1M-$5M"}
@@ -181,9 +107,6 @@ class ResearchIndustryTrendsTool(BaseTool):
     args_schema: Type[BaseModel] = ResearchIndustryTrendsInput
     
     def _run(self, query: str = "{}", **kwargs) -> str:
-        if debug_logger:
-            debug_logger.log("TOOL_INPUT", f"{self.name} called", query)
-            
         logger.info(f"=== RESEARCH TOOL CALLED ===")
         logger.info(f"Input type: {type(query)}")
         
@@ -209,9 +132,6 @@ class ResearchIndustryTrendsTool(BaseTool):
             revenue_range = "$1M-$5M"
         
         logger.info(f"Using industry: {industry}, location: {location}, revenue: {revenue_range}")
-        
-        if debug_logger:
-            debug_logger.log("PARSED_INPUT", f"Industry: {industry}, Location: {location}, Revenue: {revenue_range}")
         
         # Create structured research query for Perplexity
         research_query = f"""
@@ -246,56 +166,34 @@ class ResearchIndustryTrendsTool(BaseTool):
         
         logger.info(f"Calling Perplexity with structured query...")
         
-        if debug_logger:
-            debug_logger.log("PERPLEXITY_QUERY", "Sending research query to Perplexity", research_query)
-        
         # Get research from Perplexity
         result = perplexity.search(research_query)
         logger.info(f"Perplexity result type: {type(result)}")
         
-        if debug_logger:
-            debug_logger.log("PERPLEXITY_RESPONSE", "Received response from Perplexity", result)
-        
         if "error" in result:
             logger.error(f"Perplexity error: {result}")
             # Return formatted fallback text that agent can understand
-            fallback_result = f"""Research Status: Using Fallback Data
-
-INDUSTRY RESEARCH RESULTS for {industry} in {location} ({revenue_range}):
+            return f"""Industry Research for {industry} in {location} ({revenue_range}):
 
 VALUATION BENCHMARKS:
-✓ EBITDA multiples: 4-6x for well-run businesses
-✓ Revenue multiples: 1.2-2.0x depending on recurring revenue
-✓ Recurring revenue threshold: 60%+ creates 1-2x EBITDA premium
-✓ Owner dependence impact: Over 30 days away reduces value by 20-30%
-✓ Client concentration: Over 30% from one client reduces value by 20-30%
-✓ Top discount factors: Owner dependence and customer concentration
+- EBITDA multiples: 4-6x for well-run businesses
+- Revenue multiples: 1.2-2.0x depending on recurring revenue
+- Recurring revenue threshold: 60%+ creates 1-2x EBITDA premium
+- Owner dependence: Over 30 days away reduces value by 20-30%
+- Client concentration: Over 30% from one client reduces value by 20-30%
+- Top discount factors: Owner dependence and customer concentration
 
 IMPROVEMENT STRATEGIES:
-1. Reducing owner dependence (6 months):
-   - Delegate key decisions and client relationships
-   - Expected impact: 15-20% value increase
-   
-2. Systematizing operations (3 months):
-   - Document all processes and implement management systems
-   - Expected impact: 10-15% value increase
-   
-3. Improving revenue quality (12 months):
-   - Convert to contracts and diversify client base
-   - Expected impact: 20-30% value increase
+1. Reducing owner dependence: Delegate key decisions and client relationships over 6 months. Impact: 15-20% value increase
+2. Systematizing operations: Document all processes and implement management systems over 3 months. Impact: 10-15% value increase
+3. Improving revenue quality: Convert to contracts and diversify client base over 12 months. Impact: 20-30% value increase
 
 MARKET CONDITIONS:
-✓ Buyers prioritize: Recurring revenue, systematic operations, growth potential
-✓ Average sale time: 9-12 months for prepared businesses
-✓ Key trend: Technology integration and remote capabilities increasingly valued
+- Buyers prioritize: Recurring revenue, systematic operations, growth potential
+- Average sale time: 9-12 months for prepared businesses
+- Key trend: Technology integration and remote capabilities increasingly valued
 
-Status: Fallback data used due to API unavailability
-Research Quality: Good - based on industry standards"""
-            
-            if debug_logger:
-                debug_logger.save_output(self.name, query, fallback_result)
-            
-            return fallback_result
+Note: Research data unavailable - using industry standard benchmarks."""
         
         # Extract content from Perplexity response
         try:
@@ -305,34 +203,24 @@ Research Quality: Good - based on industry standards"""
             logger.error(f"Failed to extract content: {e}")
             content = "Research extraction failed"
         
-        # Format as human-readable text
-        formatted_result = f"""Research Status: Success
-
-INDUSTRY RESEARCH RESULTS for {industry} in {location} ({revenue_range}):
+        # CRITICAL: Return formatted TEXT that agent can parse naturally
+        return f"""Industry Research for {industry} in {location} ({revenue_range}):
 
 {content}
 
-RESEARCH METADATA:
-✓ Industry: {industry}
-✓ Location: {location}
-✓ Revenue Range: {revenue_range}
-✓ Source: Perplexity AI Research
-✓ Timestamp: {datetime.now().isoformat()}
-✓ Status: Live data retrieved successfully
+Research Details:
+- Industry: {industry}
+- Location: {location}
+- Revenue Range: {revenue_range}
+- Source: Perplexity AI Research
 
-Next Steps: Extract specific benchmarks, improvement strategies, and market conditions from the research above."""
-        
-        if debug_logger:
-            debug_logger.save_output(self.name, query, formatted_result)
-            debug_logger.log("FINAL_OUTPUT", f"Returning {len(formatted_result)} chars of formatted research")
-        
-        return formatted_result
+Instructions for analysis: Extract specific benchmarks, improvement strategies, and market conditions from the research above."""
 
 class FindExitBenchmarksTool(BaseTool):
     name: str = "find_exit_benchmarks"
     description: str = """
     Find typical valuation multiples and exit statistics for the industry.
-    Returns formatted benchmark data as text that agents can understand.
+    Returns formatted benchmark data that agents can understand.
     
     Input: Industry name or JSON string containing industry info
     Example: "Professional Services" or {"industry": "Professional Services"}
@@ -342,9 +230,6 @@ class FindExitBenchmarksTool(BaseTool):
     args_schema: Type[BaseModel] = FindExitBenchmarksInput
     
     def _run(self, industry: str = "Professional Services", **kwargs) -> str:
-        if debug_logger:
-            debug_logger.log("TOOL_INPUT", f"{self.name} called", industry)
-            
         logger.info(f"=== FIND EXIT BENCHMARKS CALLED ===")
         logger.info(f"Input type: {type(industry)}")
         logger.info(f"Input value: {str(industry)[:100]}...")
@@ -370,39 +255,29 @@ class FindExitBenchmarksTool(BaseTool):
         Focus on small to medium businesses ($1M-$20M revenue).
         """
         
-        if debug_logger:
-            debug_logger.log("BENCHMARK_QUERY", f"Researching benchmarks for: {industry}")
-        
         # Get raw research from Perplexity
         result = perplexity.search(benchmark_query)
         
         if "error" in result:
             logger.warning("Using mock benchmarks due to API error")
-            fallback_result = f"""Benchmark Research Status: Using Fallback Data
-
-EXIT BENCHMARKS for {industry}:
+            return f"""Exit Benchmarks for {industry}:
 
 VALUATION MULTIPLES:
-✓ Revenue multiples: 1.2-2.0x (varies by recurring revenue percentage)
-✓ EBITDA multiples: 4-6x for average businesses, 6-8x for top performers
-✓ SDE multiples: 2.5-4x for smaller businesses under $2M revenue
+- Revenue multiples: 1.2-2.0x (varies by recurring revenue percentage)
+- EBITDA multiples: 4-6x for average businesses, 6-8x for top performers
+- SDE multiples: 2.5-4x for smaller businesses under $2M revenue
 
 SALE STATISTICS:
-✓ Average time to sell: 9-12 months from listing to close
-✓ Success rate: 60-70% of listed businesses sell
-✓ Preparation time: 6-12 months recommended before listing
+- Average time to sell: 9-12 months from listing to close
+- Success rate: 60-70% of listed businesses sell
+- Preparation time: 6-12 months recommended before listing
 
 KEY VALUE DRIVERS:
-✓ Recurring revenue over 60%: Adds 1-2x to EBITDA multiple
-✓ Owner working less than 20 hours/week: Adds 15-25% to value
-✓ Diversified customer base: Critical for achieving higher multiples
+- Recurring revenue over 60%: Adds 1-2x to EBITDA multiple
+- Owner working less than 20 hours/week: Adds 15-25% to value
+- Diversified customer base: Critical for achieving higher multiples
 
-Status: Using industry standard benchmarks (fallback data)"""
-            
-            if debug_logger:
-                debug_logger.save_output(self.name, industry, fallback_result)
-            
-            return fallback_result
+Note: Using industry standard benchmarks as research unavailable."""
         
         try:
             content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
@@ -410,22 +285,14 @@ Status: Using industry standard benchmarks (fallback data)"""
             content = "Benchmark data extraction failed"
         
         # Return formatted text
-        formatted_result = f"""Benchmark Research Status: Success
-
-EXIT BENCHMARKS for {industry}:
+        return f"""Exit Benchmarks for {industry}:
 
 {content}
 
-BENCHMARK SUMMARY:
-✓ Industry analyzed: {industry}
-✓ Focus: Small to medium businesses ($1M-$20M revenue)
-✓ Data relevance: Current market conditions (2025)
-✓ Status: Live benchmark data retrieved"""
-        
-        if debug_logger:
-            debug_logger.save_output(self.name, industry, formatted_result)
-        
-        return formatted_result
+Benchmark Summary:
+- Industry analyzed: {industry}
+- Focus: Small to medium businesses ($1M-$20M revenue)
+- Data relevance: Current market conditions (2025)"""
 
 class FormatResearchOutputTool(BaseTool):
     name: str = "format_research_output"
@@ -435,14 +302,11 @@ class FormatResearchOutputTool(BaseTool):
     
     Input: Text containing raw research findings
     
-    Returns structured text with clear sections and extraction guidance.
+    Returns structured text with clear sections and instructions for data extraction.
     """
     args_schema: Type[BaseModel] = FormatResearchOutputInput
     
     def _run(self, raw_research: str = "{}", **kwargs) -> str:
-        if debug_logger:
-            debug_logger.log("TOOL_INPUT", f"{self.name} called", raw_research)
-            
         try:
             logger.info(f"=== FORMAT RESEARCH OUTPUT CALLED ===")
             logger.info(f"Input type: {type(raw_research)}")
@@ -450,23 +314,12 @@ class FormatResearchOutputTool(BaseTool):
             
             # Handle empty input
             if not raw_research or raw_research == "{}" or raw_research == "":
-                result = """Formatting Status: Failed - No Data
+                return """No research data provided to format.
 
-No research data provided to format.
-
-Required Input:
-- Raw research findings from industry trends or benchmarks
-- Text containing valuation data, strategies, or market conditions
-
-Action: Provide research findings to structure into:
+Please provide research findings to structure into:
 - VALUATION BENCHMARKS
 - IMPROVEMENT STRATEGIES  
 - MARKET CONDITIONS"""
-                
-                if debug_logger:
-                    debug_logger.save_output(self.name, raw_research, result)
-                
-                return result
             
             # If input is already formatted text, help structure it
             if isinstance(raw_research, str) and not raw_research.startswith('{'):
@@ -477,68 +330,51 @@ Action: Provide research findings to structure into:
                 research_text = data.get('raw_content', '') or data.get('content', '') or str(data)
             
             # Return structured guidance for the agent
-            formatted_result = f"""Formatting Status: Success
+            return f"""Research Analysis Framework:
 
-STRUCTURED RESEARCH ANALYSIS:
-
-ORIGINAL RESEARCH DATA:
+ORIGINAL RESEARCH:
 {research_text}
 
-EXTRACTED INSIGHTS:
+EXTRACTION INSTRUCTIONS:
 
-1. VALUATION BENCHMARKS:
-   ✓ Base EBITDA multiple range: [Extract from above]
-   ✓ Base revenue multiple range: [Extract from above]
-   ✓ Recurring revenue threshold: [Extract percentage]
-   ✓ Recurring revenue premium: [Extract multiplier]
-   ✓ Owner dependence impact: [Extract discount %]
-   ✓ Client concentration impact: [Extract threshold and discount]
+1. VALUATION BENCHMARKS (Extract these specific data points):
+   - Base EBITDA multiple range (e.g., "4-6x")
+   - Base revenue multiple range (e.g., "1.2-2.0x")
+   - Recurring revenue threshold for premium (e.g., "60%")
+   - Size of recurring revenue premium (e.g., "1-2x additional")
+   - Owner dependence threshold (e.g., "14 days")
+   - Owner dependence discount (e.g., "20-30%")
+   - Client concentration threshold (e.g., "30%")
+   - Client concentration discount (e.g., "20-30%")
 
-2. IMPROVEMENT STRATEGIES:
-   Owner Dependence:
-   ✓ Action: [Extract specific steps]
-   ✓ Timeline: [Extract months]
-   ✓ Impact: [Extract value increase %]
+2. IMPROVEMENT STRATEGIES (Extract for each category):
+   Owner Dependence Improvements:
+   - Specific action and timeline
+   - Expected value impact percentage
    
-   Revenue Quality:
-   ✓ Action: [Extract specific steps]
-   ✓ Timeline: [Extract months]
-   ✓ Impact: [Extract value increase %]
+   Revenue Quality Improvements:
+   - Specific action and timeline
+   - Expected value impact percentage
    
-   Operations:
-   ✓ Action: [Extract specific steps]
-   ✓ Timeline: [Extract months]
-   ✓ Impact: [Extract value increase %]
+   Operational Improvements:
+   - Specific action and timeline
+   - Expected value impact percentage
 
-3. MARKET CONDITIONS:
-   ✓ Top buyer priorities: [Extract list]
-   ✓ Average sale timeline: [Extract months]
-   ✓ Current trend: [Extract trend and impact]
+3. MARKET CONDITIONS (Extract these elements):
+   - Top 3 buyer priorities in order
+   - Average sale timeline in months
+   - Current market trend and its impact
 
-Status: Research successfully structured for analysis
-Next Step: Use these insights for scoring and recommendations"""
-            
-            if debug_logger:
-                debug_logger.save_output(self.name, raw_research, formatted_result)
-                debug_logger.log("FORMAT_COMPLETE", f"Structured {len(research_text)} chars into formatted output")
-            
-            return formatted_result
+Analyze the research above and extract specific numbers, percentages, and timelines for each category."""
             
         except Exception as e:
             logger.error(f"Error formatting research output: {str(e)}")
-            error_result = f"""Formatting Status: Error
-
-Failed to format research: {str(e)}
+            return f"""Error formatting research: {str(e)}
 
 Please manually extract:
 - Valuation benchmarks
 - Improvement strategies
 - Market conditions"""
-            
-            if debug_logger:
-                debug_logger.save_output(self.name, raw_research, error_result)
-            
-            return error_result
 
 # Create tool instances
 research_industry_trends = ResearchIndustryTrendsTool()
@@ -566,9 +402,6 @@ def create_research_agent(llm, prompts: Dict[str, Any]) -> Agent:
         find_exit_benchmarks,
         format_research_output
     ]
-    
-    if debug_logger:
-        debug_logger.log("AGENT_CREATION", f"Creating research agent with {len(tools)} tools")
     
     return Agent(
         role=config.get('role'),

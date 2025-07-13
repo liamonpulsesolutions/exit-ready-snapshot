@@ -341,7 +341,7 @@ Error: {str(e)}
 
 Please ensure assessment data is complete before creating summary."""
         
- class GenerateRecommendationsTool(BaseTool):
+class GenerateRecommendationsTool(BaseTool):
     name: str = "generate_recommendations"
     description: str = """
     Generate comprehensive recommendations section with Quick Wins, Strategic Priorities, and Critical Focus.

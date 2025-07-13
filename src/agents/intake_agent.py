@@ -3,12 +3,87 @@ from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Type
 import logging
+import json
+import os
+from datetime import datetime
 from ..tools.google_sheets import GoogleSheetsLogger
 from ..tools.pii_detector import PIIDetector
 from ..utils.json_helper import safe_parse_json
 from ..utils.pii_storage import store_pii_mapping
-import json
 
+# ========== DEBUG SETUP ==========
+DEBUG_MODE = os.getenv('CREWAI_DEBUG', 'false').lower() == 'true'
+
+class DebugFileLogger:
+    def __init__(self, agent_name: str):
+        self.agent_name = agent_name
+        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_dir = "debug_logs"
+        os.makedirs(self.log_dir, exist_ok=True)
+        
+        # Create debug file
+        self.debug_file = os.path.join(
+            self.log_dir, 
+            f"{agent_name}_{self.session_id}_debug.log"
+        )
+        
+        # Create structured output file
+        self.output_file = os.path.join(
+            self.log_dir,
+            f"{agent_name}_{self.session_id}_output.json"
+        )
+        
+        self.outputs = []
+        
+        # Write header
+        with open(self.debug_file, 'w') as f:
+            f.write(f"=== {agent_name.upper()} DEBUG LOG ===\n")
+            f.write(f"Session: {self.session_id}\n")
+            f.write(f"Started: {datetime.now().isoformat()}\n")
+            f.write("=" * 50 + "\n\n")
+    
+    def log(self, category: str, message: str, data: Any = None):
+        timestamp = datetime.now().isoformat()
+        with open(self.debug_file, 'a') as f:
+            f.write(f"[{timestamp}] {category}: {message}\n")
+            if data:
+                f.write(f"  Data Type: {type(data)}\n")
+                f.write(f"  Data Content: {repr(data)[:500]}...\n")
+                if isinstance(data, str):
+                    try:
+                        parsed = json.loads(data)
+                        f.write(f"  Parsed JSON: {json.dumps(parsed, indent=2)[:500]}...\n")
+                    except:
+                        f.write("  Not valid JSON\n")
+            f.write("-" * 30 + "\n")
+    
+    def save_output(self, tool_name: str, input_data: Any, output_data: Any):
+        output_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "tool": tool_name,
+            "input": {
+                "type": str(type(input_data)),
+                "content": str(input_data)[:1000]
+            },
+            "output": {
+                "type": str(type(output_data)),
+                "content": str(output_data)[:1000]
+            }
+        }
+        self.outputs.append(output_entry)
+        
+        # Save to file
+        with open(self.output_file, 'w') as f:
+            json.dump({
+                "agent": self.agent_name,
+                "session": self.session_id,
+                "outputs": self.outputs
+            }, f, indent=2)
+
+# Global logger instance
+debug_logger = DebugFileLogger("intake_agent") if DEBUG_MODE else None
+
+# Regular logger
 logger = logging.getLogger(__name__)
 
 # Initialize tools globally so they can be used by tool classes
@@ -65,13 +140,22 @@ class ValidateFormDataTool(BaseTool):
     args_schema: Type[BaseModel] = ValidateFormDataInput
     
     def _run(self, form_data_str: str = "{}", **kwargs) -> str:
+        if debug_logger:
+            debug_logger.log("TOOL_INPUT", f"{self.name} called", form_data_str)
+        
         try:
             # Use safe parsing
             form_data = safe_parse_json(form_data_str, {}, "validate_form_data")
             if not form_data:
-                return "Validation Failed: No form data provided or invalid JSON format. Please check the input data."
+                result = "Validation Failed: No form data provided or invalid JSON format. Please check the input data."
+                if debug_logger:
+                    debug_logger.save_output(self.name, form_data_str, result)
+                return result
         except Exception as e:
-            return f"Validation Failed: Input parsing error - {str(e)}"
+            result = f"Validation Failed: Input parsing error - {str(e)}"
+            if debug_logger:
+                debug_logger.save_output(self.name, form_data_str, result)
+            return result
         
         required_fields = [
             'uuid', 'name', 'email', 'industry', 'years_in_business',
@@ -87,74 +171,86 @@ class ValidateFormDataTool(BaseTool):
                 missing_fields.append(field)
         
         if missing_fields:
-            return f"Validation Failed: Missing required fields - {', '.join(missing_fields)}. Please ensure all required fields are provided."
-        
-        # Log missing optional fields as warnings
-        missing_optional = []
-        for field in optional_fields:
-            if field not in form_data or not form_data[field]:
-                missing_optional.append(field)
-        
-        if missing_optional:
-            logger.warning(f"Missing optional fields: {', '.join(missing_optional)} - using defaults")
-        
-        # Validate responses
-        expected_questions = [f"q{i}" for i in range(1, 11)]
-        missing_responses = []
-        
-        responses = form_data.get('responses', {})
-        for q in expected_questions:
-            if q not in responses or not responses[q]:
-                missing_responses.append(q)
-        
-        if missing_responses:
-            return f"Validation Failed: Missing responses for questions - {', '.join(missing_responses)}. All 10 questions must be answered."
-        
-        # Success message with summary
-        return f"""Validation Successful:
+            result = f"Validation Failed: Missing required fields - {', '.join(missing_fields)}. Please ensure all required fields are provided."
+        else:
+            responses = form_data.get('responses', {})
+            response_count = len(responses)
+            
+            result = f"""Validation Successful:
 - UUID: {form_data.get('uuid')}
-- Name: {form_data.get('name')}
-- Industry: {form_data.get('industry')}
-- All required fields present
-- All 10 questions answered
-- Ready for processing"""
+- All {len(required_fields)} required fields present
+- {response_count} responses provided
+- Revenue range: {'Provided' if form_data.get('revenue_range') else 'Not provided (optional)'}
+- Ready for PII processing"""
+            
+        if debug_logger:
+            debug_logger.save_output(self.name, form_data_str, result)
+            debug_logger.log("VALIDATION_RESULT", result, form_data)
+            
+        return result
 
 class DetectAndRedactPIITool(BaseTool):
-    name: str = "detect_and_redact_pii_tool"
+    name: str = "detect_and_redact_pii"
     description: str = """
-    Detect and redact PII from text, returning anonymized text and mapping.
+    Detect PII in text and return both the redacted text and a mapping of what was redacted.
     
-    Input: Text string to scan for PII
+    Input should be plain text to scan.
     
-    Returns summary of PII detection and redaction results.
+    Returns status message with redaction summary.
     """
     args_schema: Type[BaseModel] = DetectAndRedactPIIInput
     
     def _run(self, text: str = "", **kwargs) -> str:
-        if not text or text.strip() == "":
-            return "No text provided for PII detection."
+        if debug_logger:
+            debug_logger.log("TOOL_INPUT", f"{self.name} called", text)
+            
+        if not text:
+            result = "PII Detection Failed: No text provided for scanning"
+            if debug_logger:
+                debug_logger.save_output(self.name, text, result)
+            return result
         
-        result = pii_detector.detect_and_redact(text)
-        
-        # Format as readable text
-        if result.get('pii_found'):
-            mapping = result.get('mapping', {})
-            return f"""PII Detection Complete:
-- PII Found: Yes
-- Items Redacted: {len(mapping)}
-- Redaction Details:
-  {chr(10).join(f'  - {k}: [REDACTED]' for k in mapping.keys())}
-- All PII successfully anonymized"""
-        else:
-            return """PII Detection Complete:
-- PII Found: No
-- No personal information detected in the text
-- Text is already anonymous"""
+        try:
+            # Use the PII detector
+            detection_result = pii_detector.detect_and_redact(text)
+            
+            redacted_text = detection_result.get('redacted_text', text)
+            pii_mapping = detection_result.get('mapping', {})
+            
+            if pii_mapping:
+                mapping_items = '\n'.join(f"  - {k}: {v}" for k, v in pii_mapping.items())
+                result = f"""PII Detection Complete:
+- Original text length: {len(text)} chars
+- Redacted text length: {len(redacted_text)} chars
+- PII items found: {len(pii_mapping)}
+
+Mapping:
+{mapping_items}
+
+Status: Successfully redacted all PII"""
+            else:
+                result = """PII Detection Complete:
+- No PII detected in the provided text
+- Text remains unchanged
+- Safe to use as-is"""
+            
+            if debug_logger:
+                debug_logger.save_output(self.name, text, result)
+                debug_logger.log("PII_DETECTION", f"Found {len(pii_mapping)} PII items", pii_mapping)
+                
+            return result
+            
+        except Exception as e:
+            result = f"PII Detection Failed: {str(e)}"
+            if debug_logger:
+                debug_logger.save_output(self.name, text, result)
+            logger.error(f"Error in PII detection: {str(e)}")
+            return result
 
 class LogToCRMTool(BaseTool):
-    name: str = "log_to_crm_tool"
+    name: str = "log_to_crm"
     description: str = """
-    Log user data to Google Sheets CRM.
+    Log user data to CRM (Google Sheets).
     
     Input should be JSON string containing user data.
     
@@ -163,34 +259,47 @@ class LogToCRMTool(BaseTool):
     args_schema: Type[BaseModel] = LogToCRMInput
     
     def _run(self, user_data: str = "{}", **kwargs) -> str:
+        if debug_logger:
+            debug_logger.log("TOOL_INPUT", f"{self.name} called", user_data)
+            
         try:
-            user_data_dict = safe_parse_json(user_data, {}, "log_to_crm")
-            if not user_data_dict:
-                return "CRM Logging Failed: No user data provided"
+            data = safe_parse_json(user_data, {}, "log_to_crm")
+            if not data:
+                result = "CRM Logging Failed: No data provided"
+                if debug_logger:
+                    debug_logger.save_output(self.name, user_data, result)
+                return result
             
-            result = sheets_logger.log_to_crm(user_data_dict)
+            # Log to CRM
+            log_result = sheets_logger.log_to_crm(data)
             
-            # Format result as readable text
-            if result.get('status') == 'success':
-                mode = result.get('mode', 'unknown')
-                return f"""CRM Logging Successful:
-- UUID: {user_data_dict.get('uuid')}
-- Name: {user_data_dict.get('name')}
-- Email: {user_data_dict.get('email')}
-- Mode: {mode}
-- Entry created in CRM spreadsheet"""
+            if log_result.get('success'):
+                result = f"""CRM Logging Successful:
+- UUID: {data.get('uuid')}
+- Name: {data.get('name')}
+- Email: {data.get('email')}
+- Mode: {log_result.get('mode', 'Unknown')}
+- Status: Entry logged successfully"""
             else:
-                error = result.get('error', 'Unknown error')
-                return f"CRM Logging Failed: {error}"
+                result = f"CRM Logging Failed: {log_result.get('error', 'Unknown error')}"
+            
+            if debug_logger:
+                debug_logger.save_output(self.name, user_data, result)
+                debug_logger.log("CRM_RESULT", result, log_result)
                 
+            return result
+            
         except Exception as e:
-            logger.error(f"Error in log_to_crm_tool: {str(e)}")
-            return f"CRM Logging Failed: {str(e)}"
+            result = f"CRM Logging Failed: {str(e)}"
+            if debug_logger:
+                debug_logger.save_output(self.name, user_data, result)
+            logger.error(f"Error logging to CRM: {str(e)}")
+            return result
 
 class LogResponsesTool(BaseTool):
-    name: str = "log_responses_tool"
+    name: str = "log_responses"
     description: str = """
-    Log anonymized responses to Google Sheets.
+    Log assessment responses to tracking sheet.
     
     Input should be JSON string containing UUID and responses.
     
@@ -199,35 +308,51 @@ class LogResponsesTool(BaseTool):
     args_schema: Type[BaseModel] = LogResponsesInput
     
     def _run(self, data: str = "{}", **kwargs) -> str:
+        if debug_logger:
+            debug_logger.log("TOOL_INPUT", f"{self.name} called", data)
+            
         try:
-            data_dict = safe_parse_json(data, {}, "log_responses")
-            if not data_dict:
-                return "Response Logging Failed: No data provided"
+            parsed_data = safe_parse_json(data, {}, "log_responses")
+            if not parsed_data:
+                result = "Response Logging Failed: No data provided"
+                if debug_logger:
+                    debug_logger.save_output(self.name, data, result)
+                return result
             
-            uuid = data_dict.get('uuid', '')
-            responses = data_dict.get('responses', {})
-            result = sheets_logger.log_responses(uuid, responses)
+            # Log responses
+            log_result = sheets_logger.log_responses(
+                parsed_data.get('uuid', 'unknown'),
+                parsed_data.get('responses', {})
+            )
             
-            # Format result as readable text
-            if result.get('status') == 'success':
-                mode = result.get('mode', 'unknown')
-                return f"""Response Logging Successful:
-- UUID: {uuid}
-- Responses: {len(responses)} questions logged
-- Mode: {mode}
-- Anonymized data saved to responses spreadsheet"""
+            response_count = len(parsed_data.get('responses', {}))
+            
+            if log_result.get('success'):
+                result = f"""Response Logging Successful:
+- UUID: {parsed_data.get('uuid')}
+- Responses logged: {response_count}
+- Mode: {log_result.get('mode', 'Unknown')}
+- Status: All responses logged successfully"""
             else:
-                error = result.get('error', 'Unknown error')
-                return f"Response Logging Failed: {error}"
+                result = f"Response Logging Failed: {log_result.get('error', 'Unknown error')}"
+            
+            if debug_logger:
+                debug_logger.save_output(self.name, data, result)
+                debug_logger.log("RESPONSE_LOG_RESULT", result, log_result)
                 
+            return result
+            
         except Exception as e:
-            logger.error(f"Error in log_responses_tool: {str(e)}")
-            return f"Response Logging Failed: {str(e)}"
+            result = f"Response Logging Failed: {str(e)}"
+            if debug_logger:
+                debug_logger.save_output(self.name, data, result)
+            logger.error(f"Error logging responses: {str(e)}")
+            return result
 
 class StorePIIMappingTool(BaseTool):
-    name: str = "store_pii_mapping_tool"
+    name: str = "store_pii_mapping"
     description: str = """
-    Store PII mapping for later retrieval by reinsertion agent.
+    Store PII mapping for later reinsertion.
     
     Input should be JSON string containing UUID and mapping data.
     
@@ -236,10 +361,16 @@ class StorePIIMappingTool(BaseTool):
     args_schema: Type[BaseModel] = StorePIIMappingInput
     
     def _run(self, mapping_data: str = "{}", **kwargs) -> str:
+        if debug_logger:
+            debug_logger.log("TOOL_INPUT", f"{self.name} called", mapping_data)
+            
         try:
             data = safe_parse_json(mapping_data, {}, "store_pii_mapping")
             if not data:
-                return "PII Storage Failed: No mapping data provided"
+                result = "PII Storage Failed: No mapping data provided"
+                if debug_logger:
+                    debug_logger.save_output(self.name, mapping_data, result)
+                return result
             
             uuid = data.get('uuid')
             mapping = data.get('mapping')
@@ -249,18 +380,27 @@ class StorePIIMappingTool(BaseTool):
                 logger.info(f"Stored PII mapping for UUID: {uuid} with {len(mapping)} entries")
                 
                 # Format success message with mapping details
-                return f"""PII Mapping Stored Successfully:
+                result = f"""PII Mapping Stored Successfully:
 - UUID: {uuid}
 - Entries Stored: {len(mapping)}
 - Mapping includes:
   {chr(10).join(f'  - {k}' for k in mapping.keys())}
 - Ready for final personalization"""
             else:
-                return "PII Storage Failed: Missing UUID or mapping data in input"
+                result = "PII Storage Failed: Missing UUID or mapping data in input"
+            
+            if debug_logger:
+                debug_logger.save_output(self.name, mapping_data, result)
+                debug_logger.log("PII_STORAGE", result, {"uuid": uuid, "mapping_size": len(mapping) if mapping else 0})
+                
+            return result
                 
         except Exception as e:
+            result = f"PII Storage Failed: {str(e)}"
+            if debug_logger:
+                debug_logger.save_output(self.name, mapping_data, result)
             logger.error(f"Error storing PII mapping: {str(e)}")
-            return f"PII Storage Failed: {str(e)}"
+            return result
 
 class ProcessCompleteFormTool(BaseTool):
     name: str = "process_complete_form"
@@ -274,6 +414,9 @@ class ProcessCompleteFormTool(BaseTool):
     args_schema: Type[BaseModel] = ProcessCompleteFormInput
     
     def _run(self, form_data_str: str = "{}", **kwargs) -> str:
+        if debug_logger:
+            debug_logger.log("TOOL_INPUT", f"{self.name} called - MAIN PROCESSING TOOL", form_data_str)
+            
         try:
             logger.info(f"=== PROCESS COMPLETE FORM CALLED ===")
             logger.info(f"Input type: {type(form_data_str)}")
@@ -294,14 +437,21 @@ class ProcessCompleteFormTool(BaseTool):
             
             # Parse form data using safe parsing
             form_data = safe_parse_json(actual_form_data, {}, "process_complete_form")
+            
             if not form_data:
-                return """Form Processing Failed:
+                result = """Form Processing Failed:
 - Error: No form data provided or invalid JSON
 - Status: Unable to process
 - Please check the input data format"""
+                if debug_logger:
+                    debug_logger.save_output(self.name, form_data_str, result)
+                return result
             
             uuid = form_data.get('uuid', 'unknown')
             logger.info(f"Processing form for UUID: {uuid}")
+            
+            if debug_logger:
+                debug_logger.log("FORM_PARSED", f"Successfully parsed form for UUID: {uuid}", form_data)
             
             # Initialize PII mapping
             complete_pii_mapping = {
@@ -363,8 +513,11 @@ class ProcessCompleteFormTool(BaseTool):
             # Store the mapping (critical step!)
             store_pii_mapping(uuid, complete_pii_mapping)
             
+            if debug_logger:
+                debug_logger.log("PII_MAPPING_COMPLETE", f"Stored {len(complete_pii_mapping)} PII entries", complete_pii_mapping)
+            
             # Return comprehensive status message
-            return f"""Form Processing Complete:
+            result = f"""Form Processing Complete:
 
 VALIDATION STATUS: Success
 - UUID: {uuid}
@@ -393,13 +546,39 @@ NEXT STEPS:
 - Response logging ready
 - Data prepared for analysis"""
             
+            if debug_logger:
+                debug_logger.save_output(self.name, form_data_str, result)
+                debug_logger.log("FINAL_OUTPUT", "Processing complete", {
+                    "uuid": uuid,
+                    "anonymized_data": anonymized_data,
+                    "pii_mapping_stored": True,
+                    "validation_status": "success"
+                })
+                
+                # Save final JSON output that task expects
+                task_output = {
+                    "uuid": uuid,
+                    "anonymized_data": anonymized_data,
+                    "pii_mapping_stored": True,
+                    "validation_status": "success"
+                }
+                debug_logger.log("TASK_OUTPUT_FORMAT", "JSON output for task", task_output)
+            
+            return result
+            
         except Exception as e:
             logger.error(f"Error processing form: {str(e)}")
-            return f"""Form Processing Failed:
+            result = f"""Form Processing Failed:
 - Error: {str(e)}
 - UUID: {form_data.get('uuid', 'unknown') if 'form_data' in locals() else 'unknown'}
 - Status: Processing incomplete
 - Please review error and retry"""
+            
+            if debug_logger:
+                debug_logger.save_output(self.name, form_data_str, result)
+                debug_logger.log("ERROR", "Processing failed", str(e))
+                
+            return result
 
 # Create tool instances
 validate_form_data = ValidateFormDataTool()
@@ -424,6 +603,9 @@ def create_intake_agent(llm, prompts: Dict[str, Any]) -> Agent:
         store_pii_mapping_tool,
         process_complete_form
     ]
+    
+    if debug_logger:
+        debug_logger.log("AGENT_CREATION", f"Creating intake agent with {len(tools)} tools")
     
     return Agent(
         role=config.get('role'),
