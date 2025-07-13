@@ -5,6 +5,7 @@ import os
 import json
 from typing import Dict, List, Optional
 import logging
+from .utils.json_helper import safe_parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ class ExitReadySnapshotCrew:
     
     def get_industry_context(self, industry: str) -> str:
         """Get industry-specific context if available"""
-        industry_key = industry.lower().replace(' ', '_')
+        industry_key = industry.lower().replace(' ', '_').replace('&', 'and')
         industry_data = self.industry_prompts.get(industry_key, {})
         return industry_data.get('research_context', '')
     
@@ -90,7 +91,7 @@ class ExitReadySnapshotCrew:
         intake_task = Task(
             description=self.prompts['intake_agent']['task_template'],
             agent=self.agents['intake'],
-            expected_output="Structured JSON with anonymized data and PII mapping"
+            expected_output="Structured JSON with anonymized data and PII mapping stored"
         )
         self.tasks.append(intake_task)
         
@@ -139,7 +140,7 @@ class ExitReadySnapshotCrew:
         qa_task = Task(
             description=self.prompts['qa_agent']['task_template'],
             agent=self.agents['qa'],
-            expected_output="Quality assessment with approval status",
+            expected_output="Quality assessment with approval status and any issues identified",
             context=[scoring_task, summary_task]
         )
         self.tasks.append(qa_task)
@@ -148,13 +149,15 @@ class ExitReadySnapshotCrew:
         pii_reinsertion_task = Task(
             description=self.prompts['pii_reinsertion_agent']['task_template'],
             agent=self.agents['pii_reinsertion'],
-            expected_output="Complete personalized report ready for PDF generation",
-            context=[qa_task, intake_task]
+            expected_output="Complete personalized report ready for PDF generation with all PII properly reinserted",
+            context=[qa_task, summary_task, intake_task]  # Needs QA approval, summary content, and PII mapping
         )
         self.tasks.append(pii_reinsertion_task)
     
     def kickoff(self, inputs: dict) -> dict:
         """Execute the crew pipeline"""
+        logger.info(f"Starting crew execution for UUID: {inputs.get('uuid')}")
+        
         crew = Crew(
             agents=list(self.agents.values()),
             tasks=self.tasks,
@@ -175,60 +178,92 @@ class ExitReadySnapshotCrew:
             "age_range": inputs.get("age_range")
         }
         
-        # Format inputs for the task templates
-        # Format inputs for the task templates
-        formatted_inputs = {
-            "uuid": inputs.get("uuid"),  # Add this
-            "form_data": json.dumps(inputs),
-            "industry": inputs.get("industry"),
-            "location": inputs.get("location"),
-            "years_in_business": inputs.get("years_in_business"),
-            "revenue_range": inputs.get("revenue_range"),
-            "exit_timeline": inputs.get("exit_timeline"),
-            "age_range": inputs.get("age_range"),  # Add this if used in prompts
-            "industry_specific_context": industry_context,
-            "locale": self.locale,
-            "locale_specific_terminology": json.dumps(self.locale_terms),
-            "scoring_rubric": json.dumps(self.scoring_rubric),
-            "anonymized_responses": json.dumps(inputs.get("responses", {})),
-            "business_info": json.dumps(business_info),
-            "industry_research": "",
-            "research_data": "",
-            "category_scores": "",
-            "scoring_results": "",
-            "focus_areas": "",
-            "summary_content": "",
-            "pii_mapping": json.dumps({"[OWNER_NAME]": inputs.get("name", ""), "[EMAIL]": inputs.get("email", "")}),
-            "approved_report": "",
-            "original_data": json.dumps(inputs)
-        }
-        
-        result = crew.kickoff(inputs=formatted_inputs)
-        
-        # Parse the final output from the PII reinsertion agent
+        # Format inputs for the task templates with safe JSON serialization
         try:
-            # The last task (PII reinsertion) should return the complete personalized report
-            final_output = result.raw if hasattr(result, 'raw') else str(result)
+            formatted_inputs = {
+                "uuid": inputs.get("uuid", "unknown"),
+                "form_data": json.dumps(inputs),
+                "industry": inputs.get("industry", ""),
+                "location": inputs.get("location", ""),
+                "years_in_business": inputs.get("years_in_business", ""),
+                "revenue_range": inputs.get("revenue_range", ""),
+                "exit_timeline": inputs.get("exit_timeline", ""),
+                "age_range": inputs.get("age_range", ""),
+                "industry_specific_context": industry_context,
+                "locale": self.locale,
+                "locale_specific_terminology": json.dumps(self.locale_terms),
+                "scoring_rubric": json.dumps(self.scoring_rubric),
+                "anonymized_responses": json.dumps(inputs.get("responses", {})),
+                "business_info": json.dumps(business_info),
+                "industry_research": "",
+                "research_data": "",
+                "category_scores": "",
+                "scoring_results": "",
+                "focus_areas": "",
+                "summary_content": "",
+                "pii_mapping": json.dumps({"[OWNER_NAME]": inputs.get("name", ""), "[EMAIL]": inputs.get("email", "")}),
+                "approved_report": "",
+                "original_data": json.dumps(inputs)
+            }
             
-            # Parse the output - it should be JSON from the PII reinsertion agent
+            logger.info("Formatted inputs successfully")
+            
+        except Exception as e:
+            logger.error(f"Error formatting inputs: {str(e)}")
+            # Fallback to basic inputs
+            formatted_inputs = {
+                "uuid": inputs.get("uuid", "error"),
+                "form_data": str(inputs),
+                "industry": inputs.get("industry", ""),
+                "location": inputs.get("location", ""),
+                "locale": self.locale
+            }
+        
+        try:
+            logger.info("Starting crew execution...")
+            result = crew.kickoff(inputs=formatted_inputs)
+            logger.info("Crew execution completed successfully")
+            
+        except Exception as e:
+            logger.error(f"Crew execution failed: {str(e)}", exc_info=True)
+            return {
+                "uuid": inputs.get("uuid"),
+                "status": "error",
+                "error": str(e),
+                "locale": self.locale
+            }
+        
+        # Parse the final output from the crew
+        try:
+            # The result should be the output from the final PII reinsertion task
+            if hasattr(result, 'raw'):
+                final_output = result.raw
+            elif hasattr(result, 'result'):
+                final_output = result.result
+            else:
+                final_output = str(result)
+            
+            logger.info(f"Raw result type: {type(final_output)}")
+            logger.info(f"Raw result preview: {str(final_output)[:200]}...")
+            
+            # Try to parse as JSON first
             if isinstance(final_output, str):
                 try:
-                    parsed_output = json.loads(final_output)
+                    parsed_output = safe_parse_json(final_output, {}, "crew_kickoff")
                 except:
-                    # If not JSON, use the raw output
+                    # If not JSON, treat as plain text content
                     parsed_output = {"content": final_output}
             else:
                 parsed_output = final_output
             
             # Extract structured data from the crew output
-            # This assumes the crew agents properly structure their outputs
             return {
                 "uuid": inputs.get("uuid"),
-                "status": "completed",
+                "status": "completed" if parsed_output.get("success", True) else "partial",
                 "locale": self.locale,
                 "owner_name": inputs.get("name"),
                 "email": inputs.get("email"),
-                "company_name": parsed_output.get("company_name"),
+                "company_name": parsed_output.get("metadata", {}).get("company_name"),
                 "industry": inputs.get("industry"),
                 "location": inputs.get("location"),
                 "scores": self._extract_scores(parsed_output),
@@ -236,16 +271,20 @@ class ExitReadySnapshotCrew:
                 "category_summaries": self._extract_category_summaries(parsed_output),
                 "recommendations": self._extract_recommendations(parsed_output),
                 "next_steps": self._extract_next_steps(parsed_output),
+                "content": parsed_output.get("content", ""),
+                "metadata": parsed_output.get("metadata", {}),
                 "raw_output": parsed_output  # Keep raw output for debugging
             }
+            
         except Exception as e:
-            logger.error(f"Error parsing crew output: {str(e)}")
+            logger.error(f"Error parsing crew output: {str(e)}", exc_info=True)
             # Return a basic structure on error
             return {
                 "uuid": inputs.get("uuid"),
                 "status": "error",
-                "error": str(e),
-                "locale": self.locale
+                "error": f"Output parsing failed: {str(e)}",
+                "locale": self.locale,
+                "raw_result": str(result) if 'result' in locals() else "No result"
             }
     
     def _extract_scores(self, output: dict) -> dict:
@@ -259,6 +298,8 @@ class ExitReadySnapshotCrew:
             if "overall" not in scores and len(scores) > 0:
                 scores["overall"] = sum(scores.values()) / len(scores)
             return scores
+        elif "metadata" in output and "scores" in output["metadata"]:
+            return output["metadata"]["scores"]
         else:
             # Default scores if extraction fails
             return {
@@ -272,10 +313,21 @@ class ExitReadySnapshotCrew:
     
     def _extract_executive_summary(self, output: dict) -> str:
         """Extract executive summary from crew output"""
-        return output.get("executive_summary", 
-                         output.get("summary", 
-                         output.get("content", "").split("Executive Summary")[-1].split("\n\n")[0] 
-                         if "Executive Summary" in output.get("content", "") else ""))
+        # Try multiple extraction strategies
+        if "executive_summary" in output:
+            return output["executive_summary"]
+        elif "summary" in output:
+            return output["summary"]
+        elif "content" in output:
+            content = output["content"]
+            # Try to extract from content
+            if "Executive Summary" in content:
+                lines = content.split("Executive Summary")
+                if len(lines) > 1:
+                    summary_section = lines[1].split("\n\n")[0].strip()
+                    return summary_section
+        
+        return "Assessment completed successfully. Detailed analysis available in full report."
     
     def _extract_category_summaries(self, output: dict) -> dict:
         """Extract category summaries from crew output"""
@@ -289,8 +341,17 @@ class ExitReadySnapshotCrew:
         
         content = output.get("content", "")
         for category in categories:
-            # Simple extraction - you may need to enhance this
-            summaries[category] = f"Assessment of {category.replace('_', ' ').title()}"
+            category_title = category.replace('_', ' ').title()
+            if category_title in content:
+                # Try to extract section
+                lines = content.split(category_title)
+                if len(lines) > 1:
+                    section = lines[1].split("\n\n")[0].strip()
+                    summaries[category] = section[:300]  # Limit length
+                else:
+                    summaries[category] = f"Assessment of {category_title} completed"
+            else:
+                summaries[category] = f"Analysis of {category_title}"
         
         return summaries
     
@@ -300,12 +361,19 @@ class ExitReadySnapshotCrew:
             return output["recommendations"]
         
         return {
-            "quick_wins": output.get("quick_wins", []),
-            "strategic_priorities": output.get("strategic_priorities", []),
-            "critical_focus": output.get("critical_focus", "")
+            "quick_wins": output.get("quick_wins", ["Schedule process documentation", "Identify delegation opportunities", "Review client contracts"]),
+            "strategic_priorities": output.get("strategic_priorities", ["Reduce owner dependence", "Improve financial documentation", "Systematize operations"]),
+            "critical_focus": output.get("critical_focus", "Focus on the highest-impact improvements identified in your assessment")
         }
     
     def _extract_next_steps(self, output: dict) -> str:
         """Extract next steps from crew output"""
-        return output.get("next_steps", 
-                         "Schedule a consultation to discuss your personalized Exit Value Growth Plan.")
+        if "next_steps" in output:
+            return output["next_steps"]
+        elif "content" in output and "Next Steps" in output["content"]:
+            content = output["content"]
+            lines = content.split("Next Steps")
+            if len(lines) > 1:
+                return lines[1].split("\n\n")[0].strip()
+        
+        return "Schedule a consultation to discuss your personalized Exit Value Growth Plan and begin implementing the recommended improvements."

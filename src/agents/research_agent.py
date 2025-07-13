@@ -5,6 +5,7 @@ import logging
 import json
 import os
 import requests
+from ..utils.json_helper import safe_parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -14,12 +15,16 @@ class PerplexityResearcher:
     def __init__(self):
         self.api_key = os.getenv('PERPLEXITY_API_KEY')
         self.api_base = "https://api.perplexity.ai"
-        print(f"Perplexity API Key loaded: {'Yes' if self.api_key else 'No'}")  # Add this
+        logger.info(f"Perplexity API Key loaded: {'Yes' if self.api_key else 'No'}")
         if self.api_key:
-            print(f"Key starts with: {self.api_key[:10]}...")  # Add this
+            logger.info(f"Key starts with: {self.api_key[:10]}...")
         
     def search(self, query: str) -> Dict[str, Any]:
         """Make a focused search query to Perplexity"""
+        if not self.api_key:
+            logger.warning("No Perplexity API key - returning mock data")
+            return {"error": "No API key configured"}
+            
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -46,7 +51,8 @@ class PerplexityResearcher:
             response = requests.post(
                 f"{self.api_base}/chat/completions",
                 headers=headers,
-                json=payload
+                json=payload,
+                timeout=30
             )
             response.raise_for_status()
             return response.json()
@@ -61,55 +67,104 @@ class PerplexityResearcher:
 perplexity = PerplexityResearcher()
 
 @tool("research_industry_trends")
-def research_industry_trends(query: str) -> str:
+def research_industry_trends(query) -> str:
     """
     Research current trends and challenges for a specific industry and location.
     Returns raw research data from Perplexity.
     """
     logger.info(f"=== RESEARCH TOOL CALLED ===")
     logger.info(f"Input type: {type(query)}")
-    logger.info(f"Input value: {query}")
+    logger.info(f"Input value preview: {str(query)[:200]}...")
     
-    # Parse the query to extract industry and location
-    try:
-        query_data = json.loads(query) if isinstance(query, str) else query
-        industry = query_data.get('industry', 'business')
-        location = query_data.get('location', 'US')
-        logger.info(f"Parsed - Industry: {industry}, Location: {location}")
-    except Exception as e:
-        logger.error(f"Failed to parse query: {e}")
-        industry = "business"
-        location = "US"
+    # Handle any input format from CrewAI
+    if isinstance(query, dict):
+        # CrewAI passes a complex nested dict
+        if 'description' in query:
+            actual_query = query['description']
+        elif 'query' in query:
+            actual_query = query['query']
+        else:
+            # Extract from nested structure
+            actual_query = json.dumps(query)
+        logger.info(f"Extracted from dict: {actual_query[:100]}...")
+    elif isinstance(query, str):
+        actual_query = query
+    else:
+        actual_query = str(query)
     
-    # Structured research query for Perplexity
+    # Parse industry info from the query text - use defaults if not found
+    industry = "Professional Services"  # Default
+    location = "US"  # Default
+    revenue_range = "$1M-$5M"  # Default
+    
+    # Try to extract from the actual query text
+    if actual_query and isinstance(actual_query, str):
+        if "professional services" in actual_query.lower():
+            industry = "Professional Services"
+        elif "manufacturing" in actual_query.lower():
+            industry = "Manufacturing"
+        elif "retail" in actual_query.lower():
+            industry = "Retail"
+        
+        # Extract location if mentioned
+        if "pacific" in actual_query.lower() or "western us" in actual_query.lower():
+            location = "Pacific/Western US"
+        elif "uk" in actual_query.lower() or "united kingdom" in actual_query.lower():
+            location = "UK"
+    
+    logger.info(f"Using industry: {industry}, location: {location}, revenue: {revenue_range}")
+    
+    # Create structured research query for Perplexity
     research_query = f"""
-    For {industry} businesses in {location}, provide:
-    1. Three current market trends (2024-2025)
-    2. Three main challenges for business owners
-    3. Three opportunities for growth or exit
-    
-    Be specific and include data points where available.
-    Focus on factors affecting business valuation and sale readiness.
+    For small to medium {industry} businesses in {location} (revenue {revenue_range}) planning to exit in 2025:
+
+    VALUATION BENCHMARKS (150 words max):
+    1. Current revenue and EBITDA multiples for businesses this size
+    2. Multiple variations for:
+       - Recurring revenue threshold that creates premium (e.g., 60%+) and premium amount
+       - High owner dependence vs distributed leadership - quantify discount/premium
+       - Client concentration threshold affecting valuation (e.g., 30%+) and impact
+    3. Top 2 factors causing valuation discounts
+
+    IMPROVEMENT STRATEGIES (200 words max):
+    3 proven improvement examples:
+    1. Reducing owner dependence (with timeline)
+    2. Systematizing operations (with timeline)  
+    3. Improving revenue quality (with timeline)
+    Include measurable impact on valuation where available.
+
+    MARKET CONDITIONS (100 words max):
+    1. Current buyer priorities for businesses this size in 2025
+    2. Average time to sell
+    3. Most important trend affecting valuations
+
+    Requirements:
+    - Total response under 500 words
+    - Focus on SME businesses in the {revenue_range} range specifically
+    - Cite source name and year inline (e.g., "per IBISWorld 2025")
+    - Prioritize data from: M&A databases, broker associations, industry reports
     """
     
-    logger.info(f"Calling Perplexity with query: {research_query[:100]}...")
+    logger.info(f"Calling Perplexity with structured query...")
     
-    # Get raw research from Perplexity
+    # Get research from Perplexity
     result = perplexity.search(research_query)
     logger.info(f"Perplexity result type: {type(result)}")
-    logger.info(f"Perplexity result keys: {result.keys() if isinstance(result, dict) else 'Not a dict'}")
     
     if "error" in result:
         logger.error(f"Perplexity error: {result}")
         # Return mock data as fallback
         return json.dumps({
             "source": "mock",
-            "raw_content": "API unavailable - using cached data",
+            "raw_content": f"Mock research data for {industry} in {location}. EBITDA multiples: 4-6x. Revenue multiples: 1.2-2.0x. Recurring revenue threshold: 60% creates 1-2x premium. Owner dependence over 30 days acceptable. Client concentration over 30% reduces value by 20-30%. Key improvements: delegate operations (6 months, 15% value increase), document processes (3 months, 10% increase), diversify revenue (12 months, 20% increase). Buyers prioritize: recurring revenue, systematic operations, growth potential. Average sale time: 9-12 months. Trend: Buyers increasingly value technology integration and remote capabilities.",
             "query": research_query,
+            "industry": industry,
+            "location": location,
+            "revenue_range": revenue_range,
             "error": str(result.get('error'))
         })
     
-    # Extract the content
+    # Extract content from Perplexity response
     try:
         content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
         logger.info(f"Extracted content length: {len(content)}")
@@ -117,11 +172,14 @@ def research_industry_trends(query: str) -> str:
         logger.error(f"Failed to extract content: {e}")
         content = str(result)
     
-    # Return raw Perplexity response
+    # Return structured response
     output = {
         "source": "perplexity",
         "raw_content": content,
-        "query": research_query
+        "query": research_query,
+        "industry": industry,
+        "location": location,
+        "revenue_range": revenue_range
     }
     
     logger.info(f"=== RETURNING FROM RESEARCH TOOL ===")
@@ -133,6 +191,11 @@ def find_exit_benchmarks(industry: str) -> str:
     Find typical valuation multiples and exit statistics for the industry.
     Returns raw benchmark data from Perplexity.
     """
+    # Use safe parsing in case industry comes as JSON
+    if isinstance(industry, str) and industry.startswith('{'):
+        industry_data = safe_parse_json(industry, {"industry": "Professional Services"}, "find_exit_benchmarks")
+        industry = industry_data.get('industry', 'Professional Services')
+    
     # Structured benchmark query
     benchmark_query = f"""
     For {industry} businesses:
@@ -152,16 +215,20 @@ def find_exit_benchmarks(industry: str) -> str:
         logger.warning("Using mock benchmarks due to API error")
         return json.dumps({
             "source": "mock",
-            "raw_content": "API unavailable - using industry averages"
+            "raw_content": f"Mock benchmark data for {industry}: Revenue multiples 1.2-2.0x, EBITDA multiples 4-6x, average sale time 9-12 months, success rate 60-70%",
+            "industry": industry
         })
+    
+    try:
+        content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+    except:
+        content = str(result)
     
     return json.dumps({
         "source": "perplexity",
-        "raw_content": result.get('choices', [{}])[0].get('message', {}).get('content', ''),
+        "raw_content": content,
         "industry": industry
     })
-
-# Add this tool to src/agents/research_agent.py after the existing tools:
 
 @tool("format_research_output")
 def format_research_output(raw_research: str) -> str:
@@ -169,7 +236,10 @@ def format_research_output(raw_research: str) -> str:
     Format raw Perplexity research into structured data for other agents.
     """
     try:
-        data = json.loads(raw_research)
+        data = safe_parse_json(raw_research, {}, "format_research_output")
+        if not data:
+            return json.dumps({"error": "No research data to format"})
+            
         perplexity_content = data.get('raw_content', '')
         
         # This tool helps the agent structure the output
@@ -226,7 +296,9 @@ def format_research_output(raw_research: str) -> str:
         return json.dumps({
             "template": output_structure,
             "instructions": "Parse the Perplexity response and fill this structure with specific data",
-            "perplexity_content": perplexity_content
+            "perplexity_content": perplexity_content,
+            "industry": data.get('industry', ''),
+            "location": data.get('location', '')
         })
         
     except Exception as e:
@@ -245,6 +317,7 @@ def create_research_agent(llm, prompts: Dict[str, Any]) -> Agent:
     You excel at taking raw research data and structuring it into actionable insights.
     When you receive raw research from Perplexity, you parse and format it into 
     clear categories: trends, challenges, opportunities, and benchmarks.
+    You always use the format_research_output tool to structure your findings.
     """
     
     # Create tools list

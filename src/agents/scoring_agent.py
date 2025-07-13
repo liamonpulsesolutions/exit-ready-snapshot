@@ -2,6 +2,7 @@ from crewai import Agent
 from crewai.tools import tool
 from typing import Dict, Any, List, Tuple
 import logging
+from ..utils.json_helper import safe_parse_json
 import json
 import re
 
@@ -65,7 +66,16 @@ def calculate_category_score(category_data: str) -> str:
     Calculate sophisticated score for a category using multiple factors
     """
     try:
-        data = json.loads(category_data)
+        # Use safe JSON parsing
+        data = safe_parse_json(category_data, {}, "calculate_category_score")
+        if not data:
+            return json.dumps({
+                "error": "No category data provided",
+                "score": 5.0,
+                "gaps": ["Unable to analyze - no data"],
+                "strengths": []
+            })
+        
         category = data.get('category')
         responses = data.get('responses', {})
         rubric = data.get('rubric', {})
@@ -721,7 +731,15 @@ def aggregate_final_scores(all_scores: str) -> str:
     Calculate weighted overall score and readiness level
     """
     try:
-        data = json.loads(all_scores)
+        # Use safe JSON parsing
+        data = safe_parse_json(all_scores, {}, "aggregate_final_scores")
+        if not data:
+            return json.dumps({
+                "error": "No scores data provided",
+                "overall_score": 5.0,
+                "readiness_level": "Unable to Calculate"
+            })
+        
         category_scores = data.get('category_scores', {})
         
         # Calculate weighted average
@@ -800,7 +818,14 @@ def calculate_focus_areas(assessment_data: str) -> str:
     Determine priority focus areas based on ROI calculation
     """
     try:
-        data = json.loads(assessment_data)
+        # Use safe JSON parsing
+        data = safe_parse_json(assessment_data, {}, "calculate_focus_areas")
+        if not data:
+            return json.dumps({
+                "error": "No assessment data provided",
+                "primary_focus": None
+            })
+        
         category_scores = data.get('category_scores', {})
         research_data = data.get('research_data', {})
         exit_timeline = data.get('exit_timeline', 'Unknown')
@@ -845,12 +870,15 @@ def calculate_focus_areas(assessment_data: str) -> str:
                 gaps = score_data.get('gaps', [])
                 for gap in gaps:
                     if 'concentration' in gap and '%' in gap:
-                        concentration = int(re.search(r'(\d+)%', gap).group(1))
-                        if concentration > 40:
-                            is_value_killer = True
-                            killer_reason = f"{concentration}% revenue concentration is a deal breaker"
-                            typical_impact *= 1.5
-                            break
+                        try:
+                            concentration = int(re.search(r'(\d+)%', gap).group(1))
+                            if concentration > 40:
+                                is_value_killer = True
+                                killer_reason = f"{concentration}% revenue concentration is a deal breaker"
+                                typical_impact *= 1.5
+                                break
+                        except:
+                            pass
             
             # Calculate ROI score
             effort_factor = 1.0 / (typical_timeline / 6)  # 6 months = baseline
@@ -968,7 +996,7 @@ def generate_quick_actions(category, score_data, responses):
     # Default actions if none specific
     if not actions:
         actions = [
-            f"Address top gap: {gaps[0]}" if gaps else "Improve {category}",
+            f"Address top gap: {gaps[0]}" if gaps else f"Improve {category}",
             "Schedule consultation to develop improvement plan"
         ]
     

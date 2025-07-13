@@ -4,6 +4,7 @@ from typing import Dict, Any, List
 import logging
 import json
 import re
+from ..utils.json_helper import safe_parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -14,15 +15,42 @@ def check_scoring_consistency(scoring_data: str) -> str:
     Check for logical consistency across categories.
     """
     try:
-        data = json.loads(scoring_data)
+        logger.info(f"=== CHECK SCORING CONSISTENCY CALLED ===")
+        logger.info(f"Input type: {type(scoring_data)}")
+        logger.info(f"Input preview: {str(scoring_data)[:200]}...")
+        
+        # Handle CrewAI passing dict vs string
+        if isinstance(scoring_data, dict):
+            # CrewAI passes the actual data as a dict
+            data = scoring_data
+        else:
+            # Direct string input - try to parse as JSON
+            data = safe_parse_json(scoring_data, {}, "check_scoring_consistency")
+            
+        if not data:
+            return json.dumps({
+                "consistent": False,
+                "error": "No scoring data provided",
+                "scores_reviewed": 0
+            })
+        
         scores = data.get('scores', {})
         justifications = data.get('justifications', {})
         responses = data.get('responses', {})
         
+        # If data structure is different, try to extract from nested structure
+        if not scores and isinstance(data, dict):
+            # Look for scores in various possible locations
+            for key, value in data.items():
+                if isinstance(value, dict) and 'score' in value:
+                    scores[key] = value.get('score', 0)
+                    if 'justifications' in value:
+                        justifications[key] = value['justifications']
+        
         inconsistencies = []
         
         # Check if overall score aligns with category scores
-        category_scores = [v for k, v in scores.items() if k != 'overall']
+        category_scores = [v for k, v in scores.items() if k != 'overall' and isinstance(v, (int, float))]
         if category_scores:
             expected_overall = sum(category_scores) / len(category_scores)
             actual_overall = scores.get('overall', 0)
@@ -46,8 +74,9 @@ def check_scoring_consistency(scoring_data: str) -> str:
         
         # Check if low scores have appropriate justifications
         for category, score in scores.items():
-            if score < 4 and category in justifications:
-                if len(justifications[category]) < 2:
+            if isinstance(score, (int, float)) and score < 4 and category in justifications:
+                justification_text = justifications[category]
+                if isinstance(justification_text, str) and len(justification_text) < 50:
                     inconsistencies.append({
                         "type": "insufficient_justification",
                         "severity": "major",
@@ -71,7 +100,22 @@ def verify_content_quality(content_data: str) -> str:
     Identify any placeholder text or generic content.
     """
     try:
-        data = json.loads(content_data)
+        logger.info(f"=== VERIFY CONTENT QUALITY CALLED ===")
+        logger.info(f"Input type: {type(content_data)}")
+        
+        # Handle CrewAI passing dict vs string
+        if isinstance(content_data, dict):
+            data = content_data
+        else:
+            data = safe_parse_json(content_data, {}, "verify_content_quality")
+            
+        if not data:
+            return json.dumps({
+                "quality_acceptable": False,
+                "error": "No content data provided",
+                "issues": []
+            })
+        
         summary_content = data.get('summary', '')
         recommendations = data.get('recommendations', [])
         category_summaries = data.get('category_summaries', {})
@@ -104,20 +148,21 @@ def verify_content_quality(content_data: str) -> str:
         ]
         
         vague_recommendations = 0
-        for rec in recommendations:
-            if any(phrase in rec.lower() for phrase in generic_phrases):
-                vague_recommendations += 1
+        if isinstance(recommendations, list):
+            for rec in recommendations:
+                if isinstance(rec, str) and any(phrase in rec.lower() for phrase in generic_phrases):
+                    vague_recommendations += 1
         
-        if vague_recommendations > len(recommendations) * 0.3:
-            issues.append({
-                "type": "generic_recommendations",
-                "severity": "major",
-                "details": f"{vague_recommendations} out of {len(recommendations)} recommendations are too generic"
-            })
+            if len(recommendations) > 0 and vague_recommendations > len(recommendations) * 0.3:
+                issues.append({
+                    "type": "generic_recommendations",
+                    "severity": "major",
+                    "details": f"{vague_recommendations} out of {len(recommendations)} recommendations are too generic"
+                })
         
         # Check for minimum content length
         for category, summary in category_summaries.items():
-            if len(summary.split()) < 20:
+            if isinstance(summary, str) and len(summary.split()) < 20:
                 issues.append({
                     "type": "insufficient_content",
                     "severity": "major",
@@ -128,7 +173,7 @@ def verify_content_quality(content_data: str) -> str:
         overly_negative_words = ['terrible', 'awful', 'horrible', 'disaster', 'failing']
         overly_casual_words = ['gonna', 'wanna', 'stuff', 'things', 'whatever']
         
-        content_to_check = summary_content + ' '.join(str(s) for s in category_summaries.values())
+        content_to_check = summary_content + ' ' + ' '.join(str(s) for s in category_summaries.values())
         
         for word in overly_negative_words:
             if word in content_to_check.lower():
@@ -163,10 +208,16 @@ def scan_for_pii(full_content: str) -> str:
     This is critical for privacy compliance.
     """
     try:
-        data = json.loads(full_content)
+        logger.info(f"=== SCAN FOR PII CALLED ===")
+        logger.info(f"Input type: {type(full_content)}")
         
-        # Combine all text content
-        all_text = json.dumps(data)
+        # Handle CrewAI passing dict vs string
+        if isinstance(full_content, dict):
+            # Combine all text content from the dict
+            all_text = json.dumps(full_content)
+        else:
+            data = safe_parse_json(full_content, {}, "scan_for_pii")
+            all_text = json.dumps(data) if data else full_content
         
         pii_patterns = {
             'email': r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
@@ -187,8 +238,11 @@ def scan_for_pii(full_content: str) -> str:
                     if pii_type == 'ip_address':
                         # Check if it's actually a score like "8.5.7.6"
                         parts = match.split('.')
-                        if all(0 <= int(part) <= 10 for part in parts):
-                            continue
+                        try:
+                            if all(0 <= int(part) <= 10 for part in parts):
+                                continue
+                        except:
+                            pass
                     filtered_matches.append(match)
                 
                 if filtered_matches:
@@ -231,7 +285,21 @@ def validate_report_structure(report_data: str) -> str:
     Ensure the report has all required sections and proper structure.
     """
     try:
-        data = json.loads(report_data)
+        logger.info(f"=== VALIDATE REPORT STRUCTURE CALLED ===")
+        logger.info(f"Input type: {type(report_data)}")
+        
+        # Handle CrewAI passing dict vs string
+        if isinstance(report_data, dict):
+            data = report_data
+        else:
+            data = safe_parse_json(report_data, {}, "validate_report_structure")
+            
+        if not data:
+            return json.dumps({
+                "structure_valid": False,
+                "error": "No report data provided",
+                "missing_sections": ["all"]
+            })
         
         required_sections = {
             'executive_summary': 'Executive Summary',
