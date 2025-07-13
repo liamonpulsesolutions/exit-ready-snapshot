@@ -16,7 +16,7 @@ class ExitReadySnapshotCrew:
         self.load_configurations()
         self.setup_llms()
         self.setup_agents()
-        self.setup_tasks()
+        # Don't setup tasks until kickoff - we need the actual inputs
         
     def load_configurations(self):
         """Load all configuration files"""
@@ -97,8 +97,8 @@ class ExitReadySnapshotCrew:
         industry_data = self.industry_prompts.get(industry_key, {})
         return industry_data.get('research_context', '')
     
-    def setup_tasks(self):
-        """Define the task pipeline using modular templates with enhanced tool instructions"""
+    def setup_tasks(self, formatted_inputs: dict):
+        """Define the task pipeline using the actual input data - called during kickoff"""
         self.tasks = []
         
         # Task 1: Intake and PII Processing (GPT-4.1 nano)
@@ -106,21 +106,9 @@ class ExitReadySnapshotCrew:
             description=f"""
 {self.prompts['intake_agent']['task_template']}
 
-CRITICAL TOOL USAGE:
-You MUST use the process_complete_form tool with the exact form_data provided:
+Process the form data provided in the inputs.
 
-process_complete_form(form_data_str="{'{form_data}'}")
-
-This tool will:
-1. Validate all form fields
-2. Extract and redact PII 
-3. Store PII mapping for later personalization
-4. Log data to CRM and responses sheets
-5. Return anonymized data structure
-
-Do NOT try to use individual tools - use ONLY process_complete_form for complete processing.
-
-Expected output: JSON with anonymized data and confirmation of PII mapping storage.
+Use the process_complete_form tool to handle the complete intake workflow.
             """,
             agent=self.agents['intake'],
             expected_output="Structured JSON with anonymized data and PII mapping stored"
@@ -132,17 +120,13 @@ Expected output: JSON with anonymized data and confirmation of PII mapping stora
             description=f"""
 {self.prompts['research_agent']['task_template']}
 
-CRITICAL TOOL USAGE:
-1. Use research_industry_trends tool with structured query:
-   research_industry_trends(query='{{"industry": "{'{industry}'}", "location": "{'{location}'}", "revenue_range": "{'{revenue_range}'}"}}')
+Research data for:
+- Industry: {formatted_inputs.get('industry', 'Professional Services')}
+- Location: {formatted_inputs.get('location', 'US')}
+- Revenue Range: {formatted_inputs.get('revenue_range', '$1M-$5M')}
 
-2. Then use format_research_output tool to structure the results:
-   format_research_output(raw_research='[put the JSON result from step 1 here]')
-
-The research_industry_trends tool calls Perplexity API and returns structured data.
-The format_research_output tool helps you organize that data for other agents.
-
-Expected output: Structured research data with valuation benchmarks, improvement examples, and market conditions.
+Use research_industry_trends tool with the industry information provided.
+Then use format_research_output to structure the findings.
             """,
             agent=self.agents['research'],
             expected_output="""Structured research data including:
@@ -159,21 +143,16 @@ Expected output: Structured research data with valuation benchmarks, improvement
             description=f"""
 {self.prompts['scoring_agent']['task_template']}
 
-CRITICAL TOOL USAGE:
-For each category, use calculate_category_score with structured data:
+Score the assessment using the anonymized responses from the intake task.
 
-Example for owner_dependence:
-calculate_category_score(category_data='{{"category": "owner_dependence", "responses": {'{anonymized_responses}'}, "research_data": {'{industry_research}'}}}')
+For each category (owner_dependence, revenue_quality, financial_readiness, operational_resilience, growth_value):
+1. Use calculate_category_score tool with the category name and response data
+2. Aggregate all scores using aggregate_final_scores tool
+3. Calculate focus areas using calculate_focus_areas tool
 
-Repeat for all 5 categories: owner_dependence, revenue_quality, financial_readiness, operational_resilience, growth_value
+Exit timeline: {formatted_inputs.get('exit_timeline', 'Unknown')}
 
-After scoring all categories, aggregate results:
-aggregate_final_scores(all_scores='{{"category_scores": {'{all_category_results}'}}}')
-
-Finally, calculate focus areas:
-calculate_focus_areas(assessment_data='{{"category_scores": {'{category_scores}'}, "research_data": {'{industry_research}'}, "exit_timeline": "{'{exit_timeline}'}", "responses": {'{anonymized_responses}'}}}')
-
-Expected output: Complete scoring with category scores, overall score, readiness level, and focus areas.
+The anonymized responses and industry research will be available via task context from previous tasks.
             """,
             agent=self.agents['scoring'],
             expected_output="""Comprehensive scoring output including:
@@ -191,23 +170,19 @@ Expected output: Complete scoring with category scores, overall score, readiness
             description=f"""
 {self.prompts['summary_agent']['task_template']}
 
-CRITICAL TOOL USAGE:
-1. Create executive summary:
-   create_executive_summary(assessment_data='{{"overall_score": {'{scoring_results}'}, "category_scores": {'{category_scores}'}, "focus_areas": {'{focus_areas}'}, "business_info": {'{business_info}'}}}')
+Create comprehensive report sections using:
+- Business info: Industry: {formatted_inputs.get('industry', '')}, Location: {formatted_inputs.get('location', '')}, Exit Timeline: {formatted_inputs.get('exit_timeline', '')}
+- Scoring results from the scoring task (available via context)
+- Research findings from research task (available via context)
 
-2. Generate category summaries (repeat for each category):
-   generate_category_summary(category_data='{{"category": "owner_dependence", "score_data": {'{category_score_data}'}, "industry_context": {'{industry_research}'}}}')
+Use these tools in sequence:
+1. create_executive_summary - for the main summary
+2. generate_category_summary - for each scoring category
+3. generate_recommendations - for actionable advice
+4. create_industry_context - for market positioning
+5. structure_final_report - to organize everything
 
-3. Generate recommendations:
-   generate_recommendations(full_assessment='{{"focus_areas": {'{focus_areas}'}, "category_scores": {'{category_scores}'}, "business_info": {'{business_info}'}}}')
-
-4. Create industry context:
-   create_industry_context(industry_data='{{"research_findings": {'{industry_research}'}, "business_info": {'{business_info}'}, "scores": {'{category_scores}'}}}')
-
-5. Structure final report:
-   structure_final_report(complete_data='{{"executive_summary": {'{executive_summary}'}, "category_summaries": {'{category_summaries}'}, "recommendations": {'{recommendations}'}, "industry_context": {'{industry_context}'}, "business_info": {'{business_info}'}}}')
-
-Expected output: Complete personalized report ready for QA review.
+Locale: {formatted_inputs.get('locale', 'us')}
             """,
             agent=self.agents['summary'],
             expected_output="""Complete personalized report including:
@@ -225,20 +200,13 @@ Expected output: Complete personalized report ready for QA review.
             description=f"""
 {self.prompts['qa_agent']['task_template']}
 
-CRITICAL TOOL USAGE:
-1. Check scoring consistency:
-   check_scoring_consistency(scoring_data='{{"scores": {'{scoring_results}'}, "justifications": {'{scoring_justifications}'}, "responses": {'{anonymized_responses}'}}}')
+Validate the complete report from the summary task using:
+1. check_scoring_consistency - verify scores align with justifications
+2. verify_content_quality - check for completeness and clarity
+3. scan_for_pii - ensure no personal information remains
+4. validate_report_structure - confirm all sections present
 
-2. Verify content quality:
-   verify_content_quality(content_data='{{"summary": {'{summary_content}'}, "recommendations": {'{recommendations}'}, "category_summaries": {'{category_summaries}'}}}')
-
-3. Scan for PII:
-   scan_for_pii(full_content='{'{summary_content}'}')
-
-4. Validate report structure:
-   validate_report_structure(report_data='{{"executive_summary": {'{summary_content}'}, "category_scores": {'{scoring_results}'}, "recommendations": {'{recommendations}'}}}')
-
-Expected output: Quality assessment with approval status and any issues identified.
+The report content will be available via task context from the summary agent.
             """,
             agent=self.agents['qa'],
             expected_output="Quality assessment with approval status and any issues identified",
@@ -251,21 +219,17 @@ Expected output: Quality assessment with approval status and any issues identifi
             description=f"""
 {self.prompts['pii_reinsertion_agent']['task_template']}
 
-CRITICAL TOOL USAGE:
-Use the main orchestration tool to handle the complete reinsertion process:
+Personalize the final report using:
+UUID: {formatted_inputs.get('uuid', 'unknown')}
 
-process_complete_reinsertion(reinsertion_data='{{"uuid": "{'{uuid}'}", "content": {'{approved_report}'}}}')
+Use process_complete_reinsertion tool with the UUID and approved report content from QA task.
 
-This tool will automatically:
-- Retrieve the PII mapping stored by the intake agent
-- Replace all placeholders with actual personal information
-- Add personal touches to recommendations
-- Validate the final output
-- Structure for PDF generation
-
-IMPORTANT: The UUID must match exactly what the intake agent used to store the PII mapping.
-
-Expected output: Complete personalized report with all PII properly reinserted and ready for delivery.
+This will automatically:
+- Retrieve stored PII mapping
+- Replace placeholders with actual names/emails
+- Add personal touches
+- Validate final output
+- Structure for delivery
             """,
             agent=self.agents['pii_reinsertion'],
             expected_output="Complete personalized report ready for PDF generation with all PII properly reinserted",
@@ -275,17 +239,15 @@ Expected output: Complete personalized report with all PII properly reinserted a
     
     def kickoff(self, inputs: dict) -> dict:
         """Execute the crew pipeline"""
+        print("="*60)
+        print(f"CREW KICKOFF STARTED - UUID: {inputs.get('uuid')}")
+        print("="*60)
         logger.info(f"Starting crew execution for UUID: {inputs.get('uuid')}")
         
-        crew = Crew(
-            agents=list(self.agents.values()),
-            tasks=self.tasks,
-            verbose=True,
-            process="sequential"  # Tasks run in order
-        )
-        
         # Get industry-specific context
+        print(f"Getting industry context for: {inputs.get('industry', 'Unknown')}")
         industry_context = self.get_industry_context(inputs.get('industry', ''))
+        logger.info(f"Industry context loaded: {len(industry_context)} chars")
         
         # Create business info package for summary agent
         business_info = {
@@ -296,9 +258,11 @@ Expected output: Complete personalized report with all PII properly reinserted a
             "exit_timeline": inputs.get("exit_timeline"),
             "age_range": inputs.get("age_range")
         }
+        print(f"Business info created: {business_info}")
         
         # Format inputs for the task templates with safe JSON serialization
         try:
+            print("Formatting inputs...")
             formatted_inputs = {
                 "uuid": inputs.get("uuid", "unknown"),
                 "form_data": json.dumps(inputs),
@@ -314,24 +278,14 @@ Expected output: Complete personalized report with all PII properly reinserted a
                 "scoring_rubric": json.dumps(self.scoring_rubric),
                 "anonymized_responses": json.dumps(inputs.get("responses", {})),
                 "business_info": json.dumps(business_info),
-                "industry_research": "",  # Will be filled by research agent
-                "research_data": "",
-                "category_scores": "",  # Will be filled by scoring agent
-                "scoring_results": "",
-                "focus_areas": "",
-                "summary_content": "",  # Will be filled by summary agent
-                "executive_summary": "",
-                "category_summaries": "",
-                "recommendations": "",
-                "industry_context": "",
-                "pii_mapping": json.dumps({"[OWNER_NAME]": inputs.get("name", ""), "[EMAIL]": inputs.get("email", "")}),
-                "approved_report": "",  # Will be filled by QA agent
                 "original_data": json.dumps(inputs)
             }
             
+            print("Inputs formatted successfully")
             logger.info("Formatted inputs successfully")
             
         except Exception as e:
+            print(f"Error formatting inputs: {str(e)}")
             logger.error(f"Error formatting inputs: {str(e)}")
             # Fallback to basic inputs
             formatted_inputs = {
@@ -342,12 +296,98 @@ Expected output: Complete personalized report with all PII properly reinserted a
                 "locale": self.locale
             }
         
+        # Setup tasks with the actual input data
+        print("Setting up tasks with real data...")
         try:
+            self.setup_tasks(formatted_inputs)
+            print(f"{len(self.tasks)} tasks created successfully")
+            logger.info(f"Created {len(self.tasks)} tasks")
+        except Exception as e:
+            print(f"Error setting up tasks: {str(e)}")
+            logger.error(f"Error setting up tasks: {str(e)}", exc_info=True)
+            return {
+                "uuid": inputs.get("uuid"),
+                "status": "error",
+                "error": f"Task setup failed: {str(e)}",
+                "locale": self.locale
+            }
+        
+        # Create crew with tasks that have real data
+        print("Creating CrewAI crew...")
+        try:
+            crew = Crew(
+                agents=list(self.agents.values()),
+                tasks=self.tasks,
+                verbose=True,
+                process="sequential"  # Tasks run in order
+            )
+            print(f"Crew created with {len(self.agents)} agents and {len(self.tasks)} tasks")
+            logger.info(f"Crew created successfully")
+        except Exception as e:
+            print(f"Error creating crew: {str(e)}")
+            logger.error(f"Error creating crew: {str(e)}", exc_info=True)
+            return {
+                "uuid": inputs.get("uuid"),
+                "status": "error",
+                "error": f"Crew creation failed: {str(e)}",
+                "locale": self.locale
+            }
+        
+        try:
+            print("\n" + "="*60)
+            print("STARTING CREW EXECUTION")
+            print("="*60)
             logger.info("Starting crew execution...")
-            result = crew.kickoff(inputs=formatted_inputs)
-            logger.info("Crew execution completed successfully")
+            
+            # Cross-platform timeout handling
+            import time
+            import threading
+            
+            start_time = time.time()
+            print(f"Execution started at: {time.strftime('%H:%M:%S')}")
+            
+            # Create a timeout mechanism using threading (Windows compatible)
+            result = None
+            exception = None
+            
+            def run_crew():
+                nonlocal result, exception
+                try:
+                    result = crew.kickoff(inputs=formatted_inputs)
+                except Exception as e:
+                    exception = e
+            
+            # Start crew execution in a separate thread
+            crew_thread = threading.Thread(target=run_crew)
+            crew_thread.daemon = True
+            crew_thread.start()
+            
+            # Wait for completion with timeout (10 minutes)
+            crew_thread.join(timeout=600)  # 10 minutes
+            
+            if crew_thread.is_alive():
+                # Timeout occurred
+                print(f"\nCREW EXECUTION TIMED OUT after 10 minutes")
+                logger.error("Crew execution timed out")
+                return {
+                    "uuid": inputs.get("uuid"),
+                    "status": "error",
+                    "error": "Execution timed out after 10 minutes",
+                    "locale": self.locale
+                }
+            
+            if exception:
+                # Exception occurred during execution
+                raise exception
+            
+            elapsed_time = time.time() - start_time
+            print(f"\n" + "="*60)
+            print(f"CREW EXECUTION COMPLETED in {elapsed_time:.1f} seconds")
+            print("="*60)
+            logger.info(f"Crew execution completed successfully in {elapsed_time:.1f}s")
             
         except Exception as e:
+            print(f"\nCREW EXECUTION FAILED: {str(e)}")
             logger.error(f"Crew execution failed: {str(e)}", exc_info=True)
             return {
                 "uuid": inputs.get("uuid"),

@@ -5,6 +5,7 @@ import uvicorn
 import os
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
@@ -86,31 +87,58 @@ async def process_assessment(
     """
     Process an Exit Ready Snapshot assessment
     """
+    request_start_time = time.time()
+    
+    print("\n" + "="*80)
+    print(f"🌐 NEW API REQUEST RECEIVED - {datetime.now().strftime('%H:%M:%S')}")
+    print("="*80)
+    print(f"📧 Request UUID: {request.uuid}")
+    print(f"👤 Client: {request.name} ({request.email})")
+    print(f"🏢 Industry: {request.industry}")
+    print(f"📍 Location: {request.location}")
+    print(f"⏰ Exit Timeline: {request.exit_timeline}")
+    print(f"📊 Responses: {len(request.responses)} questions answered")
+    print("="*80)
+    
     try:
         logger.info(f"Processing assessment for UUID: {request.uuid}")
-        logger.info(f"Request data: {json.dumps(request.dict(), indent=2)}")
+        logger.info(f"Request data: {json.dumps(request.model_dump(), indent=2)}")
         
         # Convert request to dict for CrewAI
-        form_data = request.dict()
+        form_data = request.model_dump()
+        print(f"📋 Form data prepared: {len(json.dumps(form_data))} chars")
         
         # Initialize crew with locale
         locale = determine_locale(request.location)
+        print(f"🌍 Using locale: {locale}")
         logger.info(f"Using locale: {locale}")
         
+        print("🤖 Initializing CrewAI...")
+        crew_init_start = time.time()
         crew = ExitReadySnapshotCrew(locale=locale)
+        crew_init_time = time.time() - crew_init_start
+        print(f"✅ CrewAI initialized in {crew_init_time:.2f}s")
         
         # Process the assessment
+        print("🚀 Starting CrewAI processing...")
         logger.info("Starting CrewAI processing...")
+        
+        crew_start_time = time.time()
         result = crew.kickoff(inputs=form_data)
+        crew_execution_time = time.time() - crew_start_time
+        
+        print(f"✅ CrewAI completed in {crew_execution_time:.1f}s")
         logger.info(f"CrewAI result type: {type(result)}")
         logger.info(f"CrewAI result: {result}")
         
         # Handle the result based on what CrewAI returns
         if isinstance(result, dict) and result.get("status") == "error":
             # CrewAI returned an error
+            print(f"❌ CrewAI error: {result.get('error')}")
             logger.error(f"CrewAI error: {result.get('error')}")
             raise HTTPException(status_code=500, detail=f"Assessment processing failed: {result.get('error')}")
         
+        print("📊 Parsing crew output...")
         # Parse the crew output
         response_data = {
             "uuid": request.uuid,
@@ -134,13 +162,27 @@ async def process_assessment(
             "next_steps": result.get("next_steps", "Schedule a consultation to discuss your personalized Exit Value Growth Plan.")
         }
         
-        logger.info(f"Assessment completed for UUID: {request.uuid}")
+        total_time = time.time() - request_start_time
+        print(f"\n" + "="*80)
+        print(f"✅ API REQUEST COMPLETED in {total_time:.1f}s")
+        print(f"📈 Overall Score: {response_data['scores'].get('overall', 'N/A')}")
+        print(f"📝 Summary Length: {len(response_data['executive_summary'])} chars")
+        print("="*80)
+        
+        logger.info(f"Assessment completed for UUID: {request.uuid} in {total_time:.1f}s")
         return AssessmentResponse(**response_data)
         
     except HTTPException:
         # Re-raise HTTP exceptions
+        print(f"❌ HTTP Exception occurred")
         raise
     except Exception as e:
+        total_time = time.time() - request_start_time
+        print(f"\n❌ API REQUEST FAILED after {total_time:.1f}s")
+        print(f"💥 Error: {str(e)}")
+        print(f"🔍 Error type: {type(e).__name__}")
+        print("="*80)
+        
         logger.error(f"Error processing assessment: {str(e)}", exc_info=True)
         # Return a more informative error for debugging
         error_detail = {
@@ -174,6 +216,8 @@ def extract_company_name(result: Dict[str, Any]) -> Optional[str]:
 # Error handler
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
+    print(f"\n💥 UNHANDLED EXCEPTION: {str(exc)}")
+    print(f"🔍 Exception type: {type(exc).__name__}")
     logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
     return JSONResponse(
         status_code=500,
