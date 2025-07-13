@@ -98,12 +98,20 @@ class ExitReadySnapshotCrew:
         return industry_data.get('research_context', '')
     
     def setup_tasks(self):
-        """Define the task pipeline using modular templates"""
+        """Define the task pipeline using modular templates with enhanced tool instructions"""
         self.tasks = []
         
         # Task 1: Intake and PII Processing (GPT-4.1 nano)
         intake_task = Task(
-            description=self.prompts['intake_agent']['task_template'],
+            description=f"""
+{self.prompts['intake_agent']['task_template']}
+
+TOOL USAGE INSTRUCTIONS:
+Use process_complete_form tool with the form_data JSON string:
+process_complete_form("{json.dumps('{form_data}')}")
+
+Expected output: JSON with anonymized data and PII mapping confirmation.
+            """,
             agent=self.agents['intake'],
             expected_output="Structured JSON with anonymized data and PII mapping stored"
         )
@@ -111,7 +119,18 @@ class ExitReadySnapshotCrew:
         
         # Task 2: Industry Research (GPT-4.1 mini)
         research_task = Task(
-            description=self.prompts['research_agent']['task_template'],
+            description=f"""
+{self.prompts['research_agent']['task_template']}
+
+TOOL USAGE INSTRUCTIONS:
+1. Use research_industry_trends tool with industry info:
+   research_industry_trends('{{"industry": "{'{industry}'}", "location": "{'{location}'}", "revenue_range": "{'{revenue_range}'}"}}')
+
+2. Use format_research_output tool to structure the results:
+   format_research_output('[research results JSON]')
+
+Expected output: Structured research data with valuation benchmarks, improvement examples, and market conditions.
+            """,
             agent=self.agents['research'],
             expected_output="""Structured research data including:
             - Valuation benchmarks with specific multiples and thresholds
@@ -124,7 +143,23 @@ class ExitReadySnapshotCrew:
 
         # Task 3: Scoring and Evaluation (GPT-4.1 mini)
         scoring_task = Task(
-            description=self.prompts['scoring_agent']['task_template'],
+            description=f"""
+{self.prompts['scoring_agent']['task_template']}
+
+TOOL USAGE INSTRUCTIONS:
+For each category (owner_dependence, revenue_quality, financial_readiness, operational_resilience, growth_value):
+
+1. Use calculate_category_score tool with structured data:
+   calculate_category_score('{{"category": "owner_dependence", "responses": {'{anonymized_responses}'}, "research_data": {'{industry_research}'}}}')
+
+2. After scoring all categories, use aggregate_final_scores:
+   aggregate_final_scores('{{"category_scores": {'{category_scores}'}}}')
+
+3. Finally, use calculate_focus_areas:
+   calculate_focus_areas('{{"category_scores": {'{category_scores}'}, "research_data": {'{industry_research}'}, "exit_timeline": "{'{exit_timeline}'}", "responses": {'{anonymized_responses}'}}}')
+
+Expected output: Complete scoring with category scores, overall score, readiness level, and focus areas.
+            """,
             agent=self.agents['scoring'],
             expected_output="""Comprehensive scoring output including:
             - Detailed category scores with breakdowns
@@ -138,7 +173,27 @@ class ExitReadySnapshotCrew:
 
         # Task 4: Summary and Recommendations (GPT-4.1 mini)
         summary_task = Task(
-            description=self.prompts['summary_agent']['task_template'],
+            description=f"""
+{self.prompts['summary_agent']['task_template']}
+
+TOOL USAGE INSTRUCTIONS:
+1. Create executive summary:
+   create_executive_summary('{{"overall_score": {'{scoring_results}'}, "category_scores": {'{category_scores}'}, "focus_areas": {'{focus_areas}'}, "business_info": {'{business_info}'}}}')
+
+2. Generate category summaries for each category:
+   generate_category_summary('{{"category": "owner_dependence", "score_data": {'{category_scores}'}, "industry_context": {'{industry_research}'}}}')
+
+3. Generate recommendations:
+   generate_recommendations('{{"focus_areas": {'{focus_areas}'}, "category_scores": {'{category_scores}'}, "business_info": {'{business_info}'}}}')
+
+4. Create industry context:
+   create_industry_context('{{"research_findings": {'{industry_research}'}, "business_info": {'{business_info}'}, "scores": {'{category_scores}'}}}')
+
+5. Structure final report:
+   structure_final_report('{{"executive_summary": {'{executive_summary}'}, "category_summaries": {'{category_summaries}'}, "recommendations": {'{recommendations}'}, "industry_context": {'{industry_context}'}, "business_info": {'{business_info}'}}}')
+
+Expected output: Complete personalized report ready for QA review.
+            """,
             agent=self.agents['summary'],
             expected_output="""Complete personalized report including:
             - 200-250 word executive summary
@@ -146,13 +201,30 @@ class ExitReadySnapshotCrew:
             - Quick wins and strategic priorities
             - Industry context and market positioning
             - All content ready for client delivery""",
-            context=[scoring_task, research_task, intake_task]  # Access to all previous outputs
+            context=[scoring_task, research_task, intake_task]
         )
         self.tasks.append(summary_task)
 
         # Task 5: Quality Assurance (GPT-4.1 nano)
         qa_task = Task(
-            description=self.prompts['qa_agent']['task_template'],
+            description=f"""
+{self.prompts['qa_agent']['task_template']}
+
+TOOL USAGE INSTRUCTIONS:
+1. Check scoring consistency:
+   check_scoring_consistency('{{"scores": {'{scoring_results}'}, "justifications": {'{scoring_results}'}, "responses": {'{anonymized_responses}'}}}')
+
+2. Verify content quality:
+   verify_content_quality('{{"summary": {'{summary_content}'}, "recommendations": {'{recommendations}'}, "category_summaries": {'{category_summaries}'}}}')
+
+3. Scan for PII:
+   scan_for_pii('{'{summary_content}'}')
+
+4. Validate report structure:
+   validate_report_structure('{{"executive_summary": {'{summary_content}'}, "category_scores": {'{scoring_results}'}, "recommendations": {'{recommendations}'}}}')
+
+Expected output: Quality assessment with approval status and any issues identified.
+            """,
             agent=self.agents['qa'],
             expected_output="Quality assessment with approval status and any issues identified",
             context=[scoring_task, summary_task]
@@ -161,10 +233,25 @@ class ExitReadySnapshotCrew:
         
         # Task 6: PII Reinsertion and Final Personalization (GPT-4.1 nano)
         pii_reinsertion_task = Task(
-            description=self.prompts['pii_reinsertion_agent']['task_template'],
+            description=f"""
+{self.prompts['pii_reinsertion_agent']['task_template']}
+
+TOOL USAGE INSTRUCTIONS:
+Use the main orchestration tool with the UUID and approved content:
+process_complete_reinsertion('{{"uuid": "{'{uuid}'}", "content": {'{approved_report}'}}}')
+
+This tool will automatically:
+- Retrieve PII mapping for the UUID
+- Replace all placeholders with actual personal information
+- Add personal touches to recommendations
+- Validate the final output
+- Structure for PDF generation
+
+Expected output: Complete personalized report with all PII properly reinserted.
+            """,
             agent=self.agents['pii_reinsertion'],
             expected_output="Complete personalized report ready for PDF generation with all PII properly reinserted",
-            context=[qa_task, summary_task, intake_task]  # Needs QA approval, summary content, and PII mapping
+            context=[qa_task, summary_task, intake_task]
         )
         self.tasks.append(pii_reinsertion_task)
     
@@ -209,14 +296,18 @@ class ExitReadySnapshotCrew:
                 "scoring_rubric": json.dumps(self.scoring_rubric),
                 "anonymized_responses": json.dumps(inputs.get("responses", {})),
                 "business_info": json.dumps(business_info),
-                "industry_research": "",
+                "industry_research": "",  # Will be filled by research agent
                 "research_data": "",
-                "category_scores": "",
+                "category_scores": "",  # Will be filled by scoring agent
                 "scoring_results": "",
                 "focus_areas": "",
-                "summary_content": "",
+                "summary_content": "",  # Will be filled by summary agent
+                "executive_summary": "",
+                "category_summaries": "",
+                "recommendations": "",
+                "industry_context": "",
                 "pii_mapping": json.dumps({"[OWNER_NAME]": inputs.get("name", ""), "[EMAIL]": inputs.get("email", "")}),
-                "approved_report": "",
+                "approved_report": "",  # Will be filled by QA agent
                 "original_data": json.dumps(inputs)
             }
             

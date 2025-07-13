@@ -63,37 +63,76 @@ def analyze_pronoun_usage(text: str) -> Dict[str, Any]:
 @tool("calculate_category_score")
 def calculate_category_score(category_data=None) -> str:
     """
-    Calculate sophisticated score for a category using multiple factors
+    Calculate sophisticated score for a category using multiple factors.
+    Handles both structured input and direct category scoring from agent context.
     """
     try:
         logger.info(f"=== CALCULATE CATEGORY SCORE CALLED ===")
         logger.info(f"Input type: {type(category_data)}")
-        logger.info(f"Input preview: {str(category_data)[:200] if category_data else 'No data provided'}...")
+        logger.info(f"Input value: {str(category_data)[:300] if category_data else 'No data provided'}...")
         
-        # Handle case where CrewAI doesn't pass any arguments
-        if category_data is None:
-            logger.warning("No category data provided - using default scoring")
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if category_data is None or (isinstance(category_data, str) and not category_data.strip()):
+            logger.warning("No category data provided - this indicates the agent isn't structuring the tool call properly")
+            
+            # Return a helpful error that shows what the agent should be doing
             return json.dumps({
-                "error": "No category data provided",
-                "score": 5.0,
-                "gaps": ["Unable to analyze - no data"],
-                "strengths": []
+                "error": "AGENT INSTRUCTION: You must call this tool with structured data like: {'category': 'owner_dependence', 'responses': {...}, 'research_data': {...}}",
+                "score": DEFAULT_SCORES.get("owner_dependence", 5.0),  # Default fallback
+                "gaps": ["Tool called without required data structure"],
+                "strengths": [],
+                "debug_info": {
+                    "received_input": str(category_data),
+                    "expected_format": "JSON object with category, responses, and research_data keys"
+                }
             })
         
-        # Use safe JSON parsing
-        data = safe_parse_json(category_data, {}, "calculate_category_score")
-        if not data:
-            return json.dumps({
-                "error": "No category data provided",
-                "score": 5.0,
-                "gaps": ["Unable to analyze - no data"],
-                "strengths": []
-            })
+        # Try to parse the input
+        if isinstance(category_data, str):
+            try:
+                data = json.loads(category_data)
+            except json.JSONDecodeError:
+                # Handle raw category name (fallback)
+                category_name = category_data.strip().lower()
+                if category_name in DEFAULT_SCORES:
+                    return json.dumps({
+                        "error": f"Received category name '{category_name}' but need full data structure",
+                        "score": DEFAULT_SCORES[category_name],
+                        "gaps": ["Incomplete data provided to scoring tool"],
+                        "strengths": []
+                    })
+                else:
+                    data = {}
+        else:
+            data = category_data
         
-        category = data.get('category')
+        # Extract required fields
+        category = data.get('category', 'unknown')
         responses = data.get('responses', {})
-        rubric = data.get('rubric', {})
         research_data = data.get('research_data', {})
+        rubric = data.get('rubric', {})
+        
+        logger.info(f"Processing category: {category}")
+        logger.info(f"Available responses: {list(responses.keys()) if responses else 'None'}")
+        
+        # If we still don't have the required data, provide instructions
+        if not category or category == 'unknown':
+            return json.dumps({
+                "error": "Missing 'category' field in input data",
+                "score": 5.0,
+                "gaps": ["Category not specified"],
+                "strengths": [],
+                "agent_instruction": "Call this tool with: {'category': 'owner_dependence', 'responses': {...}, 'research_data': {...}}"
+            })
+        
+        if not responses:
+            logger.warning(f"No responses provided for category {category}")
+            return json.dumps({
+                "error": f"No responses provided for category {category}",
+                "score": DEFAULT_SCORES.get(category, 5.0),
+                "gaps": [f"No response data available for {category} analysis"],
+                "strengths": []
+            })
         
         # Route to appropriate scoring function
         if category == 'owner_dependence':
@@ -109,18 +148,33 @@ def calculate_category_score(category_data=None) -> str:
         else:
             result = {
                 "score": DEFAULT_SCORES.get(category, 5.0),
-                "error": f"Unknown category: {category}"
+                "error": f"Unknown category: {category}",
+                "gaps": [f"Scoring logic not implemented for {category}"],
+                "strengths": []
             }
         
+        # Ensure required fields are present
+        if 'weight' not in result:
+            weights = {
+                'owner_dependence': 0.25,
+                'revenue_quality': 0.25,
+                'financial_readiness': 0.20,
+                'operational_resilience': 0.15,
+                'growth_value': 0.15
+            }
+            result['weight'] = weights.get(category, 0.20)
+        
+        logger.info(f"Category {category} scored: {result.get('score', 'N/A')}")
         return json.dumps(result)
         
     except Exception as e:
-        logger.error(f"Error calculating category score: {str(e)}")
+        logger.error(f"Error calculating category score: {str(e)}", exc_info=True)
         return json.dumps({
-            "error": str(e),
+            "error": f"Scoring error: {str(e)}",
             "score": 5.0,
-            "gaps": ["Error in scoring"],
-            "strengths": []
+            "gaps": ["Error in scoring calculation"],
+            "strengths": [],
+            "debug_info": str(category_data) if category_data else "No input data"
         })
 
 def score_owner_dependence(responses: Dict[str, str], research_data: Dict[str, Any]) -> Dict[str, Any]:

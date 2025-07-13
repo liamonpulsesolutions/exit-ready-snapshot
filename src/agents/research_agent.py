@@ -67,17 +67,37 @@ class PerplexityResearcher:
 perplexity = PerplexityResearcher()
 
 @tool("research_industry_trends")
-def research_industry_trends(query=None) -> str:
+def research_industry_trends(query: str = "{}") -> str:
     """
     Research current trends and challenges for a specific industry and location.
     Returns raw research data from Perplexity.
+    
+    Args:
+        query: JSON string containing industry, location, and revenue_range
+        
+    Example input:
+    {
+        "industry": "Professional Services",
+        "location": "US", 
+        "revenue_range": "$1M-$5M"
+    }
+    
+    Or simple string input: "Professional Services"
+    
+    Returns JSON with research findings:
+    {
+        "source": "perplexity",
+        "raw_content": "Research findings...",
+        "industry": "Professional Services",
+        "location": "US"
+    }
     """
     logger.info(f"=== RESEARCH TOOL CALLED ===")
     logger.info(f"Input type: {type(query)}")
     logger.info(f"Input value preview: {str(query)[:200] if query else 'No query provided'}...")
     
-    # Handle case where CrewAI doesn't pass any arguments
-    if query is None:
+    # Handle case where CrewAI doesn't pass any arguments or passes empty data
+    if not query or query == "{}" or query == "":
         logger.warning("No query provided to research tool - using default industry research")
         # Default to Professional Services research
         industry = "Professional Services"
@@ -105,20 +125,41 @@ def research_industry_trends(query=None) -> str:
         location = "US"  # Default
         revenue_range = "$1M-$5M"  # Default
         
-        # Try to extract from the actual query text
-        if actual_query and isinstance(actual_query, str):
-            if "professional services" in actual_query.lower():
-                industry = "Professional Services"
-            elif "manufacturing" in actual_query.lower():
-                industry = "Manufacturing"
-            elif "retail" in actual_query.lower():
-                industry = "Retail"
-            
-            # Extract location if mentioned
-            if "pacific" in actual_query.lower() or "western us" in actual_query.lower():
-                location = "Pacific/Western US"
-            elif "uk" in actual_query.lower() or "united kingdom" in actual_query.lower():
-                location = "UK"
+        # Try to parse as JSON first
+        try:
+            query_data = json.loads(actual_query)
+            industry = query_data.get('industry', 'Professional Services')
+            location = query_data.get('location', 'US')
+            revenue_range = query_data.get('revenue_range', '$1M-$5M')
+        except json.JSONDecodeError:
+            # Try to extract from the actual query text
+            if actual_query and isinstance(actual_query, str):
+                if "professional services" in actual_query.lower():
+                    industry = "Professional Services"
+                elif "manufacturing" in actual_query.lower():
+                    industry = "Manufacturing"
+                elif "retail" in actual_query.lower():
+                    industry = "Retail"
+                elif "healthcare" in actual_query.lower():
+                    industry = "Healthcare"
+                elif "technology" in actual_query.lower():
+                    industry = "Technology"
+                
+                # Extract location if mentioned
+                if "pacific" in actual_query.lower() or "western us" in actual_query.lower():
+                    location = "Pacific/Western US"
+                elif "northeast" in actual_query.lower():
+                    location = "Northeast US"
+                elif "uk" in actual_query.lower() or "united kingdom" in actual_query.lower():
+                    location = "UK"
+                elif "australia" in actual_query.lower():
+                    location = "Australia"
+                
+                # Extract revenue range if mentioned
+                if "$10m-$20m" in actual_query.lower():
+                    revenue_range = "$10M-$20M"
+                elif "$5m-$10m" in actual_query.lower():
+                    revenue_range = "$5M-$10M"
     
     logger.info(f"Using industry: {industry}, location: {location}, revenue: {revenue_range}")
     
@@ -194,13 +235,30 @@ def research_industry_trends(query=None) -> str:
     return json.dumps(output)
 
 @tool("find_exit_benchmarks")
-def find_exit_benchmarks(industry=None) -> str:
+def find_exit_benchmarks(industry: str = "Professional Services") -> str:
     """
     Find typical valuation multiples and exit statistics for the industry.
     Returns raw benchmark data from Perplexity.
+    
+    Args:
+        industry: Industry name or JSON string containing industry info
+        
+    Example input: "Professional Services"
+    Or JSON: {"industry": "Professional Services"}
+    
+    Returns JSON with benchmark data:
+    {
+        "source": "perplexity",
+        "raw_content": "Benchmark findings...",
+        "industry": "Professional Services"
+    }
     """
-    # Handle case where no industry is provided
-    if industry is None:
+    logger.info(f"=== FIND EXIT BENCHMARKS CALLED ===")
+    logger.info(f"Input type: {type(industry)}")
+    logger.info(f"Input value: {str(industry)[:100]}...")
+    
+    # Handle case where no industry is provided or empty data
+    if not industry or industry == "{}" or industry == "":
         industry = "Professional Services"
     
     # Use safe parsing in case industry comes as JSON
@@ -243,12 +301,36 @@ def find_exit_benchmarks(industry=None) -> str:
     })
 
 @tool("format_research_output")
-def format_research_output(raw_research=None) -> str:
+def format_research_output(raw_research: str = "{}") -> str:
     """
     Format raw Perplexity research into structured data for other agents.
+    
+    Args:
+        raw_research: JSON string containing raw research data from Perplexity
+        
+    Example input:
+    {
+        "source": "perplexity",
+        "raw_content": "Research findings text...",
+        "industry": "Professional Services",
+        "location": "US"
+    }
+    
+    Returns JSON with structured research data:
+    {
+        "template": {...},
+        "instructions": "Parse the Perplexity response...",
+        "perplexity_content": "Raw content...",
+        "industry": "Professional Services"
+    }
     """
     try:
-        if raw_research is None:
+        logger.info(f"=== FORMAT RESEARCH OUTPUT CALLED ===")
+        logger.info(f"Input type: {type(raw_research)}")
+        logger.info(f"Input preview: {str(raw_research)[:200] if raw_research else 'No data provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if not raw_research or raw_research == "{}" or raw_research == "":
             return json.dumps({"error": "No research data to format"})
             
         data = safe_parse_json(raw_research, {}, "format_research_output")

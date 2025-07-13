@@ -12,12 +12,39 @@ logger = logging.getLogger(__name__)
 pii_mapping_store = {}
 
 @tool("retrieve_pii_mapping")
-def retrieve_pii_mapping(uuid) -> str:
+def retrieve_pii_mapping(uuid: str = "") -> str:
     """
     Retrieve the PII mapping for a specific assessment UUID.
     CRITICAL: This must use the actual mapping from intake agent, not mock data.
+    
+    Args:
+        uuid: The assessment UUID to retrieve PII mapping for
+        
+    Example input: "simple-test-123"
+    
+    Returns JSON with mapping data:
+    {
+        "uuid": "simple-test-123",
+        "mapping": {"[OWNER_NAME]": "John Doe", "[EMAIL]": "john@example.com"},
+        "status": "found"
+    }
     """
     try:
+        logger.info(f"=== RETRIEVE PII MAPPING CALLED ===")
+        logger.info(f"Input type: {type(uuid)}")
+        logger.info(f"Input value: {str(uuid)[:100] if uuid else 'No UUID provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if not uuid or uuid == "":
+            logger.warning("No UUID provided for PII mapping retrieval")
+            return json.dumps({
+                "uuid": "unknown",
+                "mapping": {},
+                "mapping_count": 0,
+                "status": "not_found",
+                "error": "No UUID provided"
+            })
+        
         # Handle case where uuid might be passed as JSON
         if isinstance(uuid, str) and uuid.startswith('{'):
             uuid_data = safe_parse_json(uuid, {}, "retrieve_pii_mapping")
@@ -56,15 +83,40 @@ def retrieve_pii_mapping(uuid) -> str:
         })
 
 @tool("reinsert_personal_info")
-def reinsert_personal_info(content_with_mapping) -> str:
+def reinsert_personal_info(content_with_mapping: str = "{}") -> str:
     """
     Replace all placeholders with actual personal information.
     Ensures natural language flow and proper formatting.
+    
+    Args:
+        content_with_mapping: JSON string containing content and mapping
+        
+    Example input:
+    {
+        "content": "Report for [OWNER_NAME] at [EMAIL]...",
+        "mapping": {"[OWNER_NAME]": "John Doe", "[EMAIL]": "john@example.com"}
+    }
+    
+    Returns JSON with personalized content:
+    {
+        "success": true,
+        "content": "Report for John Doe at john@example.com...",
+        "replacements_made": [...]
+    }
     """
     try:
         logger.info(f"=== REINSERT PERSONAL INFO CALLED ===")
         logger.info(f"Input type: {type(content_with_mapping)}")
-        logger.info(f"Input preview: {str(content_with_mapping)[:200]}...")
+        logger.info(f"Input preview: {str(content_with_mapping)[:200] if content_with_mapping else 'No data provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if not content_with_mapping or content_with_mapping == "{}":
+            logger.warning("No content provided for personal info reinsertion")
+            return json.dumps({
+                "success": False,
+                "error": "No content provided for reinsertion",
+                "content": ""
+            })
         
         # Handle CrewAI passing dict vs string vs raw content
         if isinstance(content_with_mapping, dict):
@@ -139,12 +191,41 @@ def reinsert_personal_info(content_with_mapping) -> str:
         return json.dumps({"error": str(e), "success": False})
 
 @tool("personalize_recommendations")
-def personalize_recommendations(recommendation_data) -> str:
+def personalize_recommendations(recommendation_data: str = "{}") -> str:
     """
     Add personal touches to recommendations and key sections.
     Makes the report feel tailored to the specific owner.
+    
+    Args:
+        recommendation_data: JSON string containing content and owner_name
+        
+    Example input:
+    {
+        "content": "The owner should consider...",
+        "owner_name": "John Doe"
+    }
+    
+    Returns JSON with personalized content:
+    {
+        "success": true,
+        "content": "John, you should consider...",
+        "personalizations_applied": 3
+    }
     """
     try:
+        logger.info(f"=== PERSONALIZE RECOMMENDATIONS CALLED ===")
+        logger.info(f"Input type: {type(recommendation_data)}")
+        logger.info(f"Input preview: {str(recommendation_data)[:200] if recommendation_data else 'No data provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if not recommendation_data or recommendation_data == "{}":
+            logger.warning("No recommendation data provided for personalization")
+            return json.dumps({
+                "success": False,
+                "error": "No recommendation data provided",
+                "content": ""
+            })
+        
         data = safe_parse_json(recommendation_data, {}, "personalize_recommendations")
         if not data:
             return json.dumps({
@@ -219,12 +300,39 @@ def personalize_recommendations(recommendation_data) -> str:
         return json.dumps({"error": str(e), "success": False})
 
 @tool("validate_final_output")
-def validate_final_output(final_report) -> str:
+def validate_final_output(final_report: str = "{}") -> str:
     """
     Perform final validation to ensure all personalizations are complete
     and the report is ready for delivery.
+    
+    Args:
+        final_report: JSON string containing the final report content
+        
+    Example input:
+    {
+        "content": "Complete report text with personalized content..."
+    }
+    
+    Returns JSON with validation results:
+    {
+        "ready_for_delivery": true,
+        "has_placeholders": false,
+        "content_length": 2500
+    }
     """
     try:
+        logger.info(f"=== VALIDATE FINAL OUTPUT CALLED ===")
+        logger.info(f"Input type: {type(final_report)}")
+        logger.info(f"Input preview: {str(final_report)[:200] if final_report else 'No data provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if not final_report or final_report == "{}":
+            logger.warning("No report data provided for final validation")
+            return json.dumps({
+                "ready_for_delivery": False,
+                "error": "No report data provided for validation"
+            })
+        
         data = safe_parse_json(final_report, {}, "validate_final_output")
         if not data:
             return json.dumps({
@@ -290,12 +398,37 @@ def validate_final_output(final_report) -> str:
         })
 
 @tool("structure_for_pdf")
-def structure_for_pdf(final_content) -> str:
+def structure_for_pdf(final_content: str = "{}") -> str:
     """
     Structure the final report content for PDF generation.
     Ensures proper formatting and section organization.
+    
+    Args:
+        final_content: JSON string containing content and metadata
+        
+    Example input:
+    {
+        "content": "Complete report content...",
+        "metadata": {"owner_name": "John Doe", "date": "2025-01-15"}
+    }
+    
+    Returns JSON with PDF structure:
+    {
+        "header": {...},
+        "sections": [...],
+        "footer": {...}
+    }
     """
     try:
+        logger.info(f"=== STRUCTURE FOR PDF CALLED ===")
+        logger.info(f"Input type: {type(final_content)}")
+        logger.info(f"Input preview: {str(final_content)[:200] if final_content else 'No data provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if not final_content or final_content == "{}":
+            logger.warning("No content provided for PDF structuring")
+            return json.dumps({"error": "No content provided for PDF structuring"})
+        
         data = safe_parse_json(final_content, {}, "structure_for_pdf")
         if not data:
             return json.dumps({"error": "No content provided for PDF structuring"})
@@ -342,14 +475,42 @@ def structure_for_pdf(final_content) -> str:
         return json.dumps({"error": str(e)})
 
 @tool("process_complete_reinsertion")
-def process_complete_reinsertion(reinsertion_data) -> str:
+def process_complete_reinsertion(reinsertion_data: str = "{}") -> str:
     """
-    Complete PII reinsertion process: retrieve mapping, reinsert, personalize, and validate
+    Complete PII reinsertion process: retrieve mapping, reinsert, personalize, and validate.
+    This is the main tool that orchestrates the entire reinsertion workflow.
+    
+    Args:
+        reinsertion_data: JSON string containing uuid and content
+        
+    Example input:
+    {
+        "uuid": "simple-test-123",
+        "content": "Report content with [OWNER_NAME] placeholders...",
+        "approved_report": "Alternative content field..."
+    }
+    
+    Returns JSON with complete personalized report:
+    {
+        "success": true,
+        "content": "Personalized report content...",
+        "metadata": {"owner_name": "John Doe", "validation": {...}}
+    }
     """
     try:
         logger.info(f"=== PROCESS COMPLETE REINSERTION CALLED ===")
         logger.info(f"Input type: {type(reinsertion_data)}")
-        logger.info(f"Input preview: {str(reinsertion_data)[:200]}...")
+        logger.info(f"Input preview: {str(reinsertion_data)[:200] if reinsertion_data else 'No data provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if not reinsertion_data or reinsertion_data == "{}":
+            logger.warning("No reinsertion data provided")
+            return json.dumps({
+                "success": False,
+                "error": "No reinsertion data provided",
+                "content": "",
+                "uuid": "unknown"
+            })
         
         # Handle CrewAI passing different input formats
         if isinstance(reinsertion_data, dict):

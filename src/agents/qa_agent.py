@@ -9,15 +9,34 @@ from ..utils.json_helper import safe_parse_json
 logger = logging.getLogger(__name__)
 
 @tool("check_scoring_consistency")
-def check_scoring_consistency(scoring_data) -> str:
+def check_scoring_consistency(scoring_data: str = "{}") -> str:
     """
     Verify that scores align with their justifications and responses.
     Check for logical consistency across categories.
+    
+    Args:
+        scoring_data: JSON string containing scores, justifications, and responses
+        
+    Example input:
+    {
+        "scores": {"owner_dependence": 6.5, "revenue_quality": 7.0},
+        "justifications": {"owner_dependence": "Good delegation structure..."},
+        "responses": {"q1": "I handle client meetings", "q2": "Less than 3 days"}
+    }
     """
     try:
         logger.info(f"=== CHECK SCORING CONSISTENCY CALLED ===")
         logger.info(f"Input type: {type(scoring_data)}")
-        logger.info(f"Input preview: {str(scoring_data)[:200]}...")
+        logger.info(f"Input preview: {str(scoring_data)[:200] if scoring_data else 'No data provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if not scoring_data or scoring_data == "{}":
+            logger.warning("No scoring data provided - using default consistency check")
+            return json.dumps({
+                "consistent": False,
+                "error": "No scoring data provided",
+                "scores_reviewed": 0
+            })
         
         # Handle CrewAI passing dict vs string
         if isinstance(scoring_data, dict):
@@ -94,14 +113,34 @@ def check_scoring_consistency(scoring_data) -> str:
         return json.dumps({"error": str(e), "consistent": False})
 
 @tool("verify_content_quality")
-def verify_content_quality(content_data) -> str:
+def verify_content_quality(content_data: str = "{}") -> str:
     """
     Check content for completeness, clarity, and professional tone.
     Identify any placeholder text or generic content.
+    
+    Args:
+        content_data: JSON string containing summary, recommendations, and category_summaries
+        
+    Example input:
+    {
+        "summary": "Executive summary text...",
+        "recommendations": ["Improve delegation", "Document processes"],
+        "category_summaries": {"owner_dependence": "Analysis text..."}
+    }
     """
     try:
         logger.info(f"=== VERIFY CONTENT QUALITY CALLED ===")
         logger.info(f"Input type: {type(content_data)}")
+        logger.info(f"Input preview: {str(content_data)[:200] if content_data else 'No data provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if not content_data or content_data == "{}":
+            logger.warning("No content data provided - using default quality check")
+            return json.dumps({
+                "quality_acceptable": False,
+                "error": "No content data provided",
+                "issues": []
+            })
         
         # Handle CrewAI passing dict vs string
         if isinstance(content_data, dict):
@@ -202,14 +241,37 @@ def verify_content_quality(content_data) -> str:
         return json.dumps({"error": str(e), "quality_acceptable": False})
 
 @tool("scan_for_pii")
-def scan_for_pii(full_content) -> str:
+def scan_for_pii(full_content: str = "{}") -> str:
     """
     Scan all content for any remaining PII that wasn't properly anonymized.
     This is critical for privacy compliance.
+    
+    Args:
+        full_content: JSON string or plain text containing all report content to scan
+        
+    Example input (JSON):
+    {
+        "content": "Report text with potential PII...",
+        "sections": {...}
+    }
+    
+    Or plain text input:
+    "Report content to scan for PII..."
     """
     try:
         logger.info(f"=== SCAN FOR PII CALLED ===")
         logger.info(f"Input type: {type(full_content)}")
+        logger.info(f"Input preview: {str(full_content)[:200] if full_content else 'No data provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if not full_content or full_content == "{}":
+            logger.warning("No content provided for PII scan - using default scan")
+            return json.dumps({
+                "pii_compliant": False,
+                "error": "No content provided for scanning",
+                "pii_found": [],
+                "scan_complete": True
+            })
         
         # Handle CrewAI passing dict vs string
         if isinstance(full_content, dict):
@@ -280,13 +342,35 @@ def scan_for_pii(full_content) -> str:
         return json.dumps({"error": str(e), "pii_compliant": False})
 
 @tool("validate_report_structure")
-def validate_report_structure(report_data) -> str:
+def validate_report_structure(report_data: str = "{}") -> str:
     """
     Ensure the report has all required sections and proper structure.
+    
+    Args:
+        report_data: JSON string containing all report sections and data
+        
+    Example input:
+    {
+        "executive_summary": "Summary text...",
+        "category_scores": {"owner_dependence": {...}},
+        "category_summaries": {...},
+        "recommendations": {...},
+        "next_steps": "Next steps text..."
+    }
     """
     try:
         logger.info(f"=== VALIDATE REPORT STRUCTURE CALLED ===")
         logger.info(f"Input type: {type(report_data)}")
+        logger.info(f"Input preview: {str(report_data)[:200] if report_data else 'No data provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if not report_data or report_data == "{}":
+            logger.warning("No report data provided - using default structure validation")
+            return json.dumps({
+                "structure_valid": False,
+                "error": "No report data provided",
+                "missing_sections": ["all"]
+            })
         
         # Handle CrewAI passing dict vs string
         if isinstance(report_data, dict):

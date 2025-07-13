@@ -8,11 +8,36 @@ import re
 logger = logging.getLogger(__name__)
 
 @tool("generate_category_summary")
-def generate_category_summary(category_data) -> str:
+def generate_category_summary(category_data: str = "{}") -> str:
     """
     Generate a comprehensive 150-200 word summary for a specific scoring category.
+    
+    Args:
+        category_data: JSON string containing category, score_data, industry_context, and locale_terms
+        
+    Example input:
+    {
+        "category": "owner_dependence",
+        "score_data": {"score": 6.5, "strengths": [...], "gaps": [...]},
+        "industry_context": {...},
+        "locale_terms": {...}
+    }
     """
     try:
+        logger.info(f"=== GENERATE CATEGORY SUMMARY CALLED ===")
+        logger.info(f"Input type: {type(category_data)}")
+        logger.info(f"Input preview: {str(category_data)[:200] if category_data else 'No data provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if not category_data or category_data == "{}":
+            logger.warning("No category data provided - using default summary")
+            return json.dumps({
+                "error": "No category data provided",
+                "category": "unknown",
+                "category_title": "Category Analysis",
+                "score": 5.0
+            })
+        
         data = json.loads(category_data) if isinstance(category_data, str) else category_data
         category = data.get('category', '')
         score_data = data.get('score_data', {})
@@ -175,11 +200,37 @@ def generate_category_recommendations(category: str, score: float, gaps: List[st
     return recommendations[:3]  # Return top 3
 
 @tool("create_executive_summary")
-def create_executive_summary(assessment_data) -> str:
+def create_executive_summary(assessment_data: str = "{}") -> str:
     """
     Create a compelling 200-250 word executive summary that captures the key insights.
+    
+    Args:
+        assessment_data: JSON string containing overall_score, readiness_level, category_scores, focus_areas, industry_context, business_info
+        
+    Example input:
+    {
+        "overall_score": 6.5,
+        "readiness_level": "Approaching Ready",
+        "category_scores": {...},
+        "focus_areas": {...},
+        "industry_context": {...},
+        "business_info": {...}
+    }
     """
     try:
+        logger.info(f"=== CREATE EXECUTIVE SUMMARY CALLED ===")
+        logger.info(f"Input type: {type(assessment_data)}")
+        logger.info(f"Input preview: {str(assessment_data)[:200] if assessment_data else 'No data provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if not assessment_data or assessment_data == "{}":
+            logger.warning("No assessment data provided - using default executive summary")
+            return json.dumps({
+                "error": "No assessment data provided",
+                "opening_context": {"industry": "Unknown", "location": "Unknown"},
+                "overall_assessment": {"score": 5.0, "readiness_level": "Unable to Calculate"}
+            })
+        
         data = json.loads(assessment_data) if isinstance(assessment_data, str) else assessment_data
         overall_score = data.get('overall_score', 5.0)
         readiness_level = data.get('readiness_level', 'Needs Work')
@@ -252,11 +303,35 @@ def get_overall_score_interpretation(score: float) -> str:
         return "Your business requires substantial preparation, but with dedication can be transformed into an attractive acquisition"
 
 @tool("generate_recommendations")
-def generate_recommendations(full_assessment) -> str:
+def generate_recommendations(full_assessment: str = "{}") -> str:
     """
     Generate comprehensive recommendations section with Quick Wins, Strategic Priorities, and Critical Focus.
+    
+    Args:
+        full_assessment: JSON string containing focus_areas, category_scores, and business_info
+        
+    Example input:
+    {
+        "focus_areas": {"primary_focus": {...}, "secondary_focus": {...}},
+        "category_scores": {...},
+        "business_info": {"exit_timeline": "1-2 years"}
+    }
     """
     try:
+        logger.info(f"=== GENERATE RECOMMENDATIONS CALLED ===")
+        logger.info(f"Input type: {type(full_assessment)}")
+        logger.info(f"Input preview: {str(full_assessment)[:200] if full_assessment else 'No data provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if not full_assessment or full_assessment == "{}":
+            logger.warning("No assessment data provided - using default recommendations")
+            return json.dumps({
+                "error": "No assessment data provided",
+                "quick_wins": ["Schedule process documentation", "Review client contracts", "Identify delegation opportunities"],
+                "strategic_priorities": [],
+                "critical_focus": {"area": "Business Systematization"}
+            })
+        
         data = json.loads(full_assessment) if isinstance(full_assessment, str) else full_assessment
         focus_areas = data.get('focus_areas', {})
         category_scores = data.get('category_scores', {})
@@ -478,11 +553,34 @@ def calculate_expected_roi(focus_areas: Dict) -> str:
         return "Significant value increase expected"
 
 @tool("create_industry_context")
-def create_industry_context(industry_data) -> str:
+def create_industry_context(industry_data: str = "{}") -> str:
     """
     Create industry context section using research data.
+    
+    Args:
+        industry_data: JSON string containing research_findings, business_info, and scores
+        
+    Example input:
+    {
+        "research_findings": {...},
+        "business_info": {"industry": "Manufacturing", "location": "Northeast US"},
+        "scores": {...}
+    }
     """
     try:
+        logger.info(f"=== CREATE INDUSTRY CONTEXT CALLED ===")
+        logger.info(f"Input type: {type(industry_data)}")
+        logger.info(f"Input preview: {str(industry_data)[:200] if industry_data else 'No data provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if not industry_data or industry_data == "{}":
+            logger.warning("No industry data provided - using default context")
+            return json.dumps({
+                "error": "No industry data provided",
+                "industry": "Unknown",
+                "market_conditions": {"current_multiples": "4-6x", "buyer_priorities": [], "average_sale_time": "9-12 months"}
+            })
+        
         data = json.loads(industry_data) if isinstance(industry_data, str) else industry_data
         research_findings = data.get('research_findings', {})
         business_info = data.get('business_info', {})
@@ -603,11 +701,36 @@ def assess_timeline_reality(exit_timeline: str, scores: Dict) -> str:
         return "Sufficient time for systematic improvements"
 
 @tool("structure_final_report")
-def structure_final_report(complete_data) -> str:
+def structure_final_report(complete_data: str = "{}") -> str:
     """
     Structure all components into final report format for PDF generation.
+    
+    Args:
+        complete_data: JSON string containing all report components
+        
+    Example input:
+    {
+        "executive_summary": {...},
+        "category_summaries": {...},
+        "recommendations": {...},
+        "industry_context": {...},
+        "business_info": {...}
+    }
     """
     try:
+        logger.info(f"=== STRUCTURE FINAL REPORT CALLED ===")
+        logger.info(f"Input type: {type(complete_data)}")
+        logger.info(f"Input preview: {str(complete_data)[:200] if complete_data else 'No data provided'}...")
+        
+        # Handle case where CrewAI doesn't pass any arguments or passes empty data
+        if not complete_data or complete_data == "{}":
+            logger.warning("No complete data provided - using default report structure")
+            return json.dumps({
+                "error": "No complete data provided",
+                "metadata": {"report_type": "Exit Ready Snapshot Assessment"},
+                "sections": []
+            })
+        
         data = json.loads(complete_data) if isinstance(complete_data, str) else complete_data
         
         # Extract all components
