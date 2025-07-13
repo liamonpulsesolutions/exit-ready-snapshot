@@ -176,27 +176,30 @@ class ExitReadySnapshotCrew:
         }
         
         # Format inputs for the task templates
+        # Format inputs for the task templates
         formatted_inputs = {
+            "uuid": inputs.get("uuid"),  # Add this
             "form_data": json.dumps(inputs),
             "industry": inputs.get("industry"),
             "location": inputs.get("location"),
             "years_in_business": inputs.get("years_in_business"),
             "revenue_range": inputs.get("revenue_range"),
             "exit_timeline": inputs.get("exit_timeline"),
+            "age_range": inputs.get("age_range"),  # Add this if used in prompts
             "industry_specific_context": industry_context,
             "locale": self.locale,
             "locale_specific_terminology": json.dumps(self.locale_terms),
             "scoring_rubric": json.dumps(self.scoring_rubric),
             "anonymized_responses": json.dumps(inputs.get("responses", {})),
-            "business_info": json.dumps(business_info),  # Added
-            "industry_research": "",  # Will be filled by research agent output
-            "research_data": "",  # Will be filled by research agent
-            "category_scores": "",  # Will be filled by scoring agent output
-            "scoring_results": "",  # Will be filled by scoring agent output
-            "focus_areas": "",  # Added - will be filled by scoring agent
-            "summary_content": "",  # Will be filled by summary agent output
+            "business_info": json.dumps(business_info),
+            "industry_research": "",
+            "research_data": "",
+            "category_scores": "",
+            "scoring_results": "",
+            "focus_areas": "",
+            "summary_content": "",
             "pii_mapping": json.dumps({"[OWNER_NAME]": inputs.get("name", ""), "[EMAIL]": inputs.get("email", "")}),
-            "approved_report": "",  # Will be filled by QA agent output
+            "approved_report": "",
             "original_data": json.dumps(inputs)
         }
         

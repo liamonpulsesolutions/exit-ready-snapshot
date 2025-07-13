@@ -14,6 +14,9 @@ class PerplexityResearcher:
     def __init__(self):
         self.api_key = os.getenv('PERPLEXITY_API_KEY')
         self.api_base = "https://api.perplexity.ai"
+        print(f"Perplexity API Key loaded: {'Yes' if self.api_key else 'No'}")  # Add this
+        if self.api_key:
+            print(f"Key starts with: {self.api_key[:10]}...")  # Add this
         
     def search(self, query: str) -> Dict[str, Any]:
         """Make a focused search query to Perplexity"""
@@ -24,7 +27,7 @@ class PerplexityResearcher:
         
         # Structured query for consistent results
         payload = {
-            "model": "llama-3.1-sonar-large-128k-online",
+            "model": "sonar",
             "messages": [
                 {
                     "role": "system",
@@ -47,8 +50,11 @@ class PerplexityResearcher:
             )
             response.raise_for_status()
             return response.json()
-        except Exception as e:
+        except requests.exceptions.RequestException as e:
             logger.error(f"Perplexity API error: {str(e)}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Response status: {e.response.status_code}")
+                logger.error(f"Response body: {e.response.text}")
             return {"error": str(e)}
 
 # Initialize researcher
@@ -60,12 +66,18 @@ def research_industry_trends(query: str) -> str:
     Research current trends and challenges for a specific industry and location.
     Returns raw research data from Perplexity.
     """
+    logger.info(f"=== RESEARCH TOOL CALLED ===")
+    logger.info(f"Input type: {type(query)}")
+    logger.info(f"Input value: {query}")
+    
     # Parse the query to extract industry and location
     try:
         query_data = json.loads(query) if isinstance(query, str) else query
         industry = query_data.get('industry', 'business')
         location = query_data.get('location', 'US')
-    except:
+        logger.info(f"Parsed - Industry: {industry}, Location: {location}")
+    except Exception as e:
+        logger.error(f"Failed to parse query: {e}")
         industry = "business"
         location = "US"
     
@@ -80,24 +92,40 @@ def research_industry_trends(query: str) -> str:
     Focus on factors affecting business valuation and sale readiness.
     """
     
+    logger.info(f"Calling Perplexity with query: {research_query[:100]}...")
+    
     # Get raw research from Perplexity
     result = perplexity.search(research_query)
+    logger.info(f"Perplexity result type: {type(result)}")
+    logger.info(f"Perplexity result keys: {result.keys() if isinstance(result, dict) else 'Not a dict'}")
     
     if "error" in result:
-        # Fallback to mock data if API fails
-        logger.warning("Using mock data due to API error")
+        logger.error(f"Perplexity error: {result}")
+        # Return mock data as fallback
         return json.dumps({
             "source": "mock",
             "raw_content": "API unavailable - using cached data",
-            "query": research_query
+            "query": research_query,
+            "error": str(result.get('error'))
         })
     
+    # Extract the content
+    try:
+        content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+        logger.info(f"Extracted content length: {len(content)}")
+    except Exception as e:
+        logger.error(f"Failed to extract content: {e}")
+        content = str(result)
+    
     # Return raw Perplexity response
-    return json.dumps({
+    output = {
         "source": "perplexity",
-        "raw_content": result.get('choices', [{}])[0].get('message', {}).get('content', ''),
+        "raw_content": content,
         "query": research_query
-    })
+    }
+    
+    logger.info(f"=== RETURNING FROM RESEARCH TOOL ===")
+    return json.dumps(output)
 
 @tool("find_exit_benchmarks")
 def find_exit_benchmarks(industry: str) -> str:

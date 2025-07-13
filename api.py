@@ -16,6 +16,12 @@ from src.utils.logging_config import setup_logging
 # Load environment variables
 load_dotenv()
 
+# Debug: Check if environment variables are loaded
+print(f"Current directory: {os.getcwd()}")
+print(f".env exists: {os.path.exists('.env')}")
+print(f"OpenAI API Key loaded: {'Yes' if os.getenv('OPENAI_API_KEY') else 'No'}")
+print(f"CREWAI_API_KEY from env: {os.getenv('CREWAI_API_KEY')}")
+
 # Setup logging
 logger = setup_logging()
 
@@ -28,6 +34,7 @@ app = FastAPI(
 
 # API Key for authentication
 API_KEY = os.getenv("CREWAI_API_KEY", "your-secure-api-key-here")
+print(f"API expecting key: {API_KEY}")
 
 # Request/Response models
 class AssessmentRequest(BaseModel):
@@ -40,6 +47,7 @@ class AssessmentRequest(BaseModel):
     age_range: str
     exit_timeline: str
     location: str
+    revenue_range: str  # Added missing field
     responses: Dict[str, str]
     _tallySubmissionId: Optional[str] = None
     _tallyFormId: Optional[str] = None
@@ -80,42 +88,67 @@ async def process_assessment(
     """
     try:
         logger.info(f"Processing assessment for UUID: {request.uuid}")
+        logger.info(f"Request data: {json.dumps(request.dict(), indent=2)}")
         
         # Convert request to dict for CrewAI
         form_data = request.dict()
         
         # Initialize crew with locale
         locale = determine_locale(request.location)
+        logger.info(f"Using locale: {locale}")
+        
         crew = ExitReadySnapshotCrew(locale=locale)
         
         # Process the assessment
+        logger.info("Starting CrewAI processing...")
         result = crew.kickoff(inputs=form_data)
+        logger.info(f"CrewAI result type: {type(result)}")
+        logger.info(f"CrewAI result: {result}")
+        
+        # Handle the result based on what CrewAI returns
+        if isinstance(result, dict) and result.get("status") == "error":
+            # CrewAI returned an error
+            logger.error(f"CrewAI error: {result.get('error')}")
+            raise HTTPException(status_code=500, detail=f"Assessment processing failed: {result.get('error')}")
         
         # Parse the crew output
-        # Note: This assumes your crew returns properly formatted data
-        # You may need to adjust based on actual CrewAI output format
-        
         response_data = {
             "uuid": request.uuid,
-            "status": "completed",
-            "owner_name": request.name,
-            "email": request.email,
-            "company_name": extract_company_name(result),
+            "status": result.get("status", "completed"),
+            "owner_name": result.get("owner_name", request.name),
+            "email": result.get("email", request.email),
+            "company_name": result.get("company_name"),
             "industry": request.industry,
             "location": request.location,
-            "scores": result.get("scores", {}),
-            "executive_summary": result.get("executive_summary", ""),
+            "scores": result.get("scores", {
+                "overall": 5.0,
+                "owner_dependence": 5.0,
+                "revenue_quality": 5.0,
+                "financial_readiness": 5.0,
+                "operational_resilience": 5.0,
+                "growth_value": 5.0
+            }),
+            "executive_summary": result.get("executive_summary", "Assessment completed successfully."),
             "category_summaries": result.get("category_summaries", {}),
             "recommendations": result.get("recommendations", {}),
-            "next_steps": result.get("next_steps", "")
+            "next_steps": result.get("next_steps", "Schedule a consultation to discuss your personalized Exit Value Growth Plan.")
         }
         
         logger.info(f"Assessment completed for UUID: {request.uuid}")
         return AssessmentResponse(**response_data)
         
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
         logger.error(f"Error processing assessment: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        # Return a more informative error for debugging
+        error_detail = {
+            "error": str(e),
+            "type": type(e).__name__,
+            "detail": "Check server logs for full stack trace"
+        }
+        raise HTTPException(status_code=500, detail=json.dumps(error_detail))
 
 # Utility functions
 def determine_locale(location: str) -> str:
@@ -128,8 +161,8 @@ def determine_locale(location: str) -> str:
         'Northeast US': 'us',
         'United Kingdom': 'uk',
         'Australia/New Zealand': 'au',
-        'Canada': 'us',
-        'Other International': 'us'
+        'Canada': 'us',  # Default to US for Canada
+        'Other International': 'us'  # Default to US
     }
     return locale_mapping.get(location, 'us')
 
@@ -144,15 +177,27 @@ async def general_exception_handler(request, exc):
     logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal server error"}
+        content={"detail": f"Internal server error: {str(exc)}"}
     )
 
 # Run the server
 if __name__ == "__main__":
+    # Final check for critical environment variables
+    if not os.getenv("OPENAI_API_KEY"):
+        print("WARNING: OPENAI_API_KEY not found in environment!")
+    if not os.getenv("CREWAI_API_KEY"):
+        print("WARNING: CREWAI_API_KEY not found in environment!")
+    
     port = int(os.getenv("API_PORT", 8000))
+    host = os.getenv("API_HOST", "0.0.0.0")
+    
+    print(f"\nStarting API server on {host}:{port}")
+    print(f"API Key authentication: {'Enabled' if API_KEY != 'your-secure-api-key-here' else 'DISABLED (using default)'}")
+    print("-" * 50)
+    
     uvicorn.run(
         app,
-        host="0.0.0.0",
+        host=host,
         port=port,
         log_level="info"
     )
