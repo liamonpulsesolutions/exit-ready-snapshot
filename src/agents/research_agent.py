@@ -1,11 +1,13 @@
 from crewai import Agent
-from crewai.tools import tool
-from typing import Dict, Any
+from crewai.tools import BaseTool
+from pydantic import BaseModel, Field
+from typing import Dict, Any, Type
 import logging
 import json
 import os
 import requests
 from ..utils.json_helper import safe_parse_json
+from ..utils.tool_input_validator import validate_and_extract_tool_input
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +54,13 @@ class PerplexityResearcher:
                 f"{self.api_base}/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=30
+                timeout=45  # Increased timeout for reliability
             )
             response.raise_for_status()
             return response.json()
+        except requests.exceptions.Timeout:
+            logger.error("Perplexity API timeout - using fallback data")
+            return {"error": "API timeout - using fallback research data"}
         except requests.exceptions.RequestException as e:
             logger.error(f"Perplexity API error: {str(e)}")
             if hasattr(e, 'response') and e.response is not None:
@@ -66,341 +71,298 @@ class PerplexityResearcher:
 # Initialize researcher
 perplexity = PerplexityResearcher()
 
-@tool("research_industry_trends")
-def research_industry_trends(query: str = "{}") -> str:
-    """
+# Tool Input Schemas
+class ResearchIndustryTrendsInput(BaseModel):
+    query: str = Field(
+        default="{}",
+        description="JSON string containing industry, location, and revenue_range, or simple string industry name"
+    )
+
+class FindExitBenchmarksInput(BaseModel):
+    industry: str = Field(
+        default="Professional Services",
+        description="Industry name or JSON string containing industry info"
+    )
+
+class FormatResearchOutputInput(BaseModel):
+    raw_research: str = Field(
+        default="{}",
+        description="JSON string containing raw research data from Perplexity"
+    )
+
+# Tool Classes
+class ResearchIndustryTrendsTool(BaseTool):
+    name: str = "research_industry_trends"
+    description: str = """
     Research current trends and challenges for a specific industry and location.
     Returns raw research data from Perplexity.
     
-    Args:
-        query: JSON string containing industry, location, and revenue_range
-        
-    Example input:
-    {
-        "industry": "Professional Services",
-        "location": "US", 
-        "revenue_range": "$1M-$5M"
-    }
+    Input should be JSON string containing industry, location, and revenue_range:
+    {"industry": "Professional Services", "location": "US", "revenue_range": "$1M-$5M"}
     
     Or simple string input: "Professional Services"
     
     Returns JSON with research findings:
-    {
-        "source": "perplexity",
-        "raw_content": "Research findings...",
-        "industry": "Professional Services",
-        "location": "US"
-    }
+    {"source": "perplexity", "raw_content": "Research findings...", "industry": "Professional Services", "location": "US"}
     """
-    logger.info(f"=== RESEARCH TOOL CALLED ===")
-    logger.info(f"Input type: {type(query)}")
-    logger.info(f"Input value preview: {str(query)[:200] if query else 'No query provided'}...")
+    args_schema: Type[BaseModel] = ResearchIndustryTrendsInput
     
-    # Handle case where CrewAI doesn't pass any arguments or passes empty data
-    if not query or query == "{}" or query == "":
-        logger.warning("No query provided to research tool - using default industry research")
-        # Default to Professional Services research
-        industry = "Professional Services"
-        location = "US"
-        revenue_range = "$1M-$5M"
-    else:
-        # Handle any input format from CrewAI
-        if isinstance(query, dict):
-            # CrewAI passes a complex nested dict
-            if 'description' in query:
-                actual_query = query['description']
-            elif 'query' in query:
-                actual_query = query['query']
-            else:
-                # Extract from nested structure
-                actual_query = json.dumps(query)
-            logger.info(f"Extracted from dict: {actual_query[:100] if actual_query else 'Empty'}...")
-        elif isinstance(query, str):
-            actual_query = query
-        else:
-            actual_query = str(query)
+    def _run(self, query: str = "{}", **kwargs) -> str:
+        logger.info(f"=== RESEARCH TOOL CALLED ===")
+        logger.info(f"Input type: {type(query)}")
         
-        # Parse industry info from the query text - use defaults if not found
-        industry = "Professional Services"  # Default
-        location = "US"  # Default
-        revenue_range = "$1M-$5M"  # Default
-        
-        # Try to parse as JSON first
+        # Enhanced input validation
         try:
-            query_data = json.loads(actual_query)
-            industry = query_data.get('industry', 'Professional Services')
-            location = query_data.get('location', 'US')
-            revenue_range = query_data.get('revenue_range', '$1M-$5M')
-        except json.JSONDecodeError:
-            # Try to extract from the actual query text
-            if actual_query and isinstance(actual_query, str):
-                if "professional services" in actual_query.lower():
-                    industry = "Professional Services"
-                elif "manufacturing" in actual_query.lower():
-                    industry = "Manufacturing"
-                elif "retail" in actual_query.lower():
-                    industry = "Retail"
-                elif "healthcare" in actual_query.lower():
-                    industry = "Healthcare"
-                elif "technology" in actual_query.lower():
-                    industry = "Technology"
-                
-                # Extract location if mentioned
-                if "pacific" in actual_query.lower() or "western us" in actual_query.lower():
-                    location = "Pacific/Western US"
-                elif "northeast" in actual_query.lower():
-                    location = "Northeast US"
-                elif "uk" in actual_query.lower() or "united kingdom" in actual_query.lower():
-                    location = "UK"
-                elif "australia" in actual_query.lower():
-                    location = "Australia"
-                
-                # Extract revenue range if mentioned
-                if "$10m-$20m" in actual_query.lower():
-                    revenue_range = "$10M-$20M"
-                elif "$5m-$10m" in actual_query.lower():
-                    revenue_range = "$5M-$10M"
-    
-    logger.info(f"Using industry: {industry}, location: {location}, revenue: {revenue_range}")
-    
-    # Create structured research query for Perplexity
-    research_query = f"""
-    For small to medium {industry} businesses in {location} (revenue {revenue_range}) planning to exit in 2025:
+            # Use the new validator for robust input handling
+            validated_input = validate_and_extract_tool_input(
+                query, 
+                expected_keys=['industry', 'location', 'revenue_range'],
+                tool_name="research_industry_trends",
+                default_return={'industry': 'Professional Services', 'location': 'US', 'revenue_range': '$1M-$5M'}
+            )
+            
+            industry = validated_input.get('industry', 'Professional Services')
+            location = validated_input.get('location', 'US')
+            revenue_range = validated_input.get('revenue_range', '$1M-$5M')
+            
+        except Exception as e:
+            logger.error(f"Input validation failed: {e}")
+            # Fallback to defaults
+            industry = "Professional Services"
+            location = "US"
+            revenue_range = "$1M-$5M"
+        
+        logger.info(f"Using industry: {industry}, location: {location}, revenue: {revenue_range}")
+        
+        # Create structured research query for Perplexity
+        research_query = f"""
+        For small to medium {industry} businesses in {location} (revenue {revenue_range}) planning to exit in 2025:
 
-    VALUATION BENCHMARKS (150 words max):
-    1. Current revenue and EBITDA multiples for businesses this size
-    2. Multiple variations for:
-       - Recurring revenue threshold that creates premium (e.g., 60%+) and premium amount
-       - High owner dependence vs distributed leadership - quantify discount/premium
-       - Client concentration threshold affecting valuation (e.g., 30%+) and impact
-    3. Top 2 factors causing valuation discounts
+        VALUATION BENCHMARKS (150 words max):
+        1. Current revenue and EBITDA multiples for businesses this size
+        2. Multiple variations for:
+           - Recurring revenue threshold that creates premium (e.g., 60%+) and premium amount
+           - High owner dependence vs distributed leadership - quantify discount/premium
+           - Client concentration threshold affecting valuation (e.g., 30%+) and impact
+        3. Top 2 factors causing valuation discounts
 
-    IMPROVEMENT STRATEGIES (200 words max):
-    3 proven improvement examples:
-    1. Reducing owner dependence (with timeline)
-    2. Systematizing operations (with timeline)  
-    3. Improving revenue quality (with timeline)
-    Include measurable impact on valuation where available.
+        IMPROVEMENT STRATEGIES (200 words max):
+        3 proven improvement examples:
+        1. Reducing owner dependence (with timeline)
+        2. Systematizing operations (with timeline)  
+        3. Improving revenue quality (with timeline)
+        Include measurable impact on valuation where available.
 
-    MARKET CONDITIONS (100 words max):
-    1. Current buyer priorities for businesses this size in 2025
-    2. Average time to sell
-    3. Most important trend affecting valuations
+        MARKET CONDITIONS (100 words max):
+        1. Current buyer priorities for businesses this size in 2025
+        2. Average time to sell
+        3. Most important trend affecting valuations
 
-    Requirements:
-    - Total response under 500 words
-    - Focus on SME businesses in the {revenue_range} range specifically
-    - Cite source name and year inline (e.g., "per IBISWorld 2025")
-    - Prioritize data from: M&A databases, broker associations, industry reports
-    """
-    
-    logger.info(f"Calling Perplexity with structured query...")
-    
-    # Get research from Perplexity
-    result = perplexity.search(research_query)
-    logger.info(f"Perplexity result type: {type(result)}")
-    
-    if "error" in result:
-        logger.error(f"Perplexity error: {result}")
-        # Return mock data as fallback
-        return json.dumps({
-            "source": "mock",
-            "raw_content": f"Mock research data for {industry} in {location}. EBITDA multiples: 4-6x. Revenue multiples: 1.2-2.0x. Recurring revenue threshold: 60% creates 1-2x premium. Owner dependence over 30 days acceptable. Client concentration over 30% reduces value by 20-30%. Key improvements: delegate operations (6 months, 15% value increase), document processes (3 months, 10% increase), diversify revenue (12 months, 20% increase). Buyers prioritize: recurring revenue, systematic operations, growth potential. Average sale time: 9-12 months. Trend: Buyers increasingly value technology integration and remote capabilities.",
+        Requirements:
+        - Total response under 500 words
+        - Focus on SME businesses in the {revenue_range} range specifically
+        - Cite source name and year inline (e.g., "per IBISWorld 2025")
+        - Prioritize data from: M&A databases, broker associations, industry reports
+        """
+        
+        logger.info(f"Calling Perplexity with structured query...")
+        
+        # Get research from Perplexity
+        result = perplexity.search(research_query)
+        logger.info(f"Perplexity result type: {type(result)}")
+        
+        if "error" in result:
+            logger.error(f"Perplexity error: {result}")
+            # Return mock data as fallback
+            return json.dumps({
+                "source": "mock",
+                "raw_content": f"Mock research data for {industry} in {location}. EBITDA multiples: 4-6x. Revenue multiples: 1.2-2.0x. Recurring revenue threshold: 60% creates 1-2x premium. Owner dependence over 30 days acceptable. Client concentration over 30% reduces value by 20-30%. Key improvements: delegate operations (6 months, 15% value increase), document processes (3 months, 10% increase), diversify revenue (12 months, 20% increase). Buyers prioritize: recurring revenue, systematic operations, growth potential. Average sale time: 9-12 months. Trend: Buyers increasingly value technology integration and remote capabilities.",
+                "query": research_query,
+                "industry": industry,
+                "location": location,
+                "revenue_range": revenue_range,
+                "error": str(result.get('error'))
+            })
+        
+        # Extract content from Perplexity response
+        try:
+            content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+            logger.info(f"Extracted content length: {len(content)}")
+        except Exception as e:
+            logger.error(f"Failed to extract content: {e}")
+            content = str(result)
+        
+        # Return structured response
+        output = {
+            "source": "perplexity",
+            "raw_content": content,
             "query": research_query,
             "industry": industry,
             "location": location,
-            "revenue_range": revenue_range,
-            "error": str(result.get('error'))
-        })
-    
-    # Extract content from Perplexity response
-    try:
-        content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
-        logger.info(f"Extracted content length: {len(content)}")
-    except Exception as e:
-        logger.error(f"Failed to extract content: {e}")
-        content = str(result)
-    
-    # Return structured response
-    output = {
-        "source": "perplexity",
-        "raw_content": content,
-        "query": research_query,
-        "industry": industry,
-        "location": location,
-        "revenue_range": revenue_range
-    }
-    
-    logger.info(f"=== RETURNING FROM RESEARCH TOOL ===")
-    return json.dumps(output)
+            "revenue_range": revenue_range
+        }
+        
+        logger.info(f"=== RETURNING FROM RESEARCH TOOL ===")
+        return json.dumps(output)
 
-@tool("find_exit_benchmarks")
-def find_exit_benchmarks(industry: str = "Professional Services") -> str:
-    """
+class FindExitBenchmarksTool(BaseTool):
+    name: str = "find_exit_benchmarks"
+    description: str = """
     Find typical valuation multiples and exit statistics for the industry.
     Returns raw benchmark data from Perplexity.
     
-    Args:
-        industry: Industry name or JSON string containing industry info
-        
-    Example input: "Professional Services"
-    Or JSON: {"industry": "Professional Services"}
+    Input: Industry name or JSON string containing industry info
+    Example: "Professional Services" or {"industry": "Professional Services"}
     
     Returns JSON with benchmark data:
-    {
-        "source": "perplexity",
-        "raw_content": "Benchmark findings...",
-        "industry": "Professional Services"
-    }
+    {"source": "perplexity", "raw_content": "Benchmark findings...", "industry": "Professional Services"}
     """
-    logger.info(f"=== FIND EXIT BENCHMARKS CALLED ===")
-    logger.info(f"Input type: {type(industry)}")
-    logger.info(f"Input value: {str(industry)[:100]}...")
+    args_schema: Type[BaseModel] = FindExitBenchmarksInput
     
-    # Handle case where no industry is provided or empty data
-    if not industry or industry == "{}" or industry == "":
-        industry = "Professional Services"
-    
-    # Use safe parsing in case industry comes as JSON
-    if isinstance(industry, str) and industry.startswith('{'):
-        industry_data = safe_parse_json(industry, {"industry": "Professional Services"}, "find_exit_benchmarks")
-        industry = industry_data.get('industry', 'Professional Services')
-    
-    # Structured benchmark query
-    benchmark_query = f"""
-    For {industry} businesses:
-    1. Typical revenue multiples for business sales
-    2. Typical EBITDA multiples
-    3. Average time to sell a business
-    4. Success rate of business sales
-    
-    Provide specific ranges and cite sources where possible.
-    Focus on small to medium businesses ($1M-$20M revenue).
-    """
-    
-    # Get raw research from Perplexity
-    result = perplexity.search(benchmark_query)
-    
-    if "error" in result:
-        logger.warning("Using mock benchmarks due to API error")
+    def _run(self, industry: str = "Professional Services", **kwargs) -> str:
+        logger.info(f"=== FIND EXIT BENCHMARKS CALLED ===")
+        logger.info(f"Input type: {type(industry)}")
+        logger.info(f"Input value: {str(industry)[:100]}...")
+        
+        # Handle case where no industry is provided or empty data
+        if not industry or industry == "{}" or industry == "":
+            industry = "Professional Services"
+        
+        # Use safe parsing in case industry comes as JSON
+        if isinstance(industry, str) and industry.startswith('{'):
+            industry_data = safe_parse_json(industry, {"industry": "Professional Services"}, "find_exit_benchmarks")
+            industry = industry_data.get('industry', 'Professional Services')
+        
+        # Structured benchmark query
+        benchmark_query = f"""
+        For {industry} businesses:
+        1. Typical revenue multiples for business sales
+        2. Typical EBITDA multiples
+        3. Average time to sell a business
+        4. Success rate of business sales
+        
+        Provide specific ranges and cite sources where possible.
+        Focus on small to medium businesses ($1M-$20M revenue).
+        """
+        
+        # Get raw research from Perplexity
+        result = perplexity.search(benchmark_query)
+        
+        if "error" in result:
+            logger.warning("Using mock benchmarks due to API error")
+            return json.dumps({
+                "source": "mock",
+                "raw_content": f"Mock benchmark data for {industry}: Revenue multiples 1.2-2.0x, EBITDA multiples 4-6x, average sale time 9-12 months, success rate 60-70%",
+                "industry": industry
+            })
+        
+        try:
+            content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+        except:
+            content = str(result)
+        
         return json.dumps({
-            "source": "mock",
-            "raw_content": f"Mock benchmark data for {industry}: Revenue multiples 1.2-2.0x, EBITDA multiples 4-6x, average sale time 9-12 months, success rate 60-70%",
+            "source": "perplexity",
+            "raw_content": content,
             "industry": industry
         })
-    
-    try:
-        content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
-    except:
-        content = str(result)
-    
-    return json.dumps({
-        "source": "perplexity",
-        "raw_content": content,
-        "industry": industry
-    })
 
-@tool("format_research_output")
-def format_research_output(raw_research: str = "{}") -> str:
-    """
+class FormatResearchOutputTool(BaseTool):
+    name: str = "format_research_output"
+    description: str = """
     Format raw Perplexity research into structured data for other agents.
     
-    Args:
-        raw_research: JSON string containing raw research data from Perplexity
-        
-    Example input:
-    {
-        "source": "perplexity",
-        "raw_content": "Research findings text...",
-        "industry": "Professional Services",
-        "location": "US"
-    }
+    Input: JSON string containing raw research data from Perplexity
+    Example: {"source": "perplexity", "raw_content": "Research findings text...", "industry": "Professional Services", "location": "US"}
     
     Returns JSON with structured research data:
-    {
-        "template": {...},
-        "instructions": "Parse the Perplexity response...",
-        "perplexity_content": "Raw content...",
-        "industry": "Professional Services"
-    }
+    {"template": {...}, "instructions": "Parse the Perplexity response...", "perplexity_content": "Raw content...", "industry": "Professional Services"}
     """
-    try:
-        logger.info(f"=== FORMAT RESEARCH OUTPUT CALLED ===")
-        logger.info(f"Input type: {type(raw_research)}")
-        logger.info(f"Input preview: {str(raw_research)[:200] if raw_research else 'No data provided'}...")
-        
-        # Handle case where CrewAI doesn't pass any arguments or passes empty data
-        if not raw_research or raw_research == "{}" or raw_research == "":
-            return json.dumps({"error": "No research data to format"})
+    args_schema: Type[BaseModel] = FormatResearchOutputInput
+    
+    def _run(self, raw_research: str = "{}", **kwargs) -> str:
+        try:
+            logger.info(f"=== FORMAT RESEARCH OUTPUT CALLED ===")
+            logger.info(f"Input type: {type(raw_research)}")
+            logger.info(f"Input preview: {str(raw_research)[:200] if raw_research else 'No data provided'}...")
             
-        data = safe_parse_json(raw_research, {}, "format_research_output")
-        if not data:
-            return json.dumps({"error": "No research data to format"})
+            # Handle case where CrewAI doesn't pass any arguments or passes empty data
+            if not raw_research or raw_research == "{}" or raw_research == "":
+                return json.dumps({"error": "No research data to format"})
+                
+            data = safe_parse_json(raw_research, {}, "format_research_output")
+            if not data:
+                return json.dumps({"error": "No research data to format"})
+                
+            perplexity_content = data.get('raw_content', '')
             
-        perplexity_content = data.get('raw_content', '')
-        
-        # This tool helps the agent structure the output
-        # The actual parsing will be done by the agent's LLM
-        
-        output_structure = {
-            "valuation_benchmarks": {
-                "base_EBITDA": "",  # e.g., "4-6x"
-                "base_revenue": "",  # e.g., "1.2-2.0x"
-                "recurring_threshold": "",  # e.g., "60%"
-                "recurring_premium": "",  # e.g., "1-2x EBITDA"
-                "owner_dependence_threshold": "",  # e.g., "14 days"
-                "owner_dependence_discount": "",  # e.g., "20-30%"
-                "concentration_threshold": "",  # e.g., "30%"
-                "concentration_discount": ""  # e.g., "20-30%"
-            },
-            "improvements": {
-                "owner_dependence": {
-                    "example": "",
-                    "timeline_months": 0,
-                    "value_impact": 0.0  # as decimal, e.g., 0.15 for 15%
+            # This tool helps the agent structure the output
+            # The actual parsing will be done by the agent's LLM
+            
+            output_structure = {
+                "valuation_benchmarks": {
+                    "base_EBITDA": "",  # e.g., "4-6x"
+                    "base_revenue": "",  # e.g., "1.2-2.0x"
+                    "recurring_threshold": "",  # e.g., "60%"
+                    "recurring_premium": "",  # e.g., "1-2x EBITDA"
+                    "owner_dependence_threshold": "",  # e.g., "14 days"
+                    "owner_dependence_discount": "",  # e.g., "20-30%"
+                    "concentration_threshold": "",  # e.g., "30%"
+                    "concentration_discount": ""  # e.g., "20-30%"
                 },
-                "revenue_quality": {
-                    "example": "",
-                    "timeline_months": 0,
-                    "value_impact": 0.0
+                "improvements": {
+                    "owner_dependence": {
+                        "example": "",
+                        "timeline_months": 0,
+                        "value_impact": 0.0  # as decimal, e.g., 0.15 for 15%
+                    },
+                    "revenue_quality": {
+                        "example": "",
+                        "timeline_months": 0,
+                        "value_impact": 0.0
+                    },
+                    "financial_readiness": {
+                        "example": "",
+                        "timeline_months": 0,
+                        "value_impact": 0.0
+                    },
+                    "operational_resilience": {
+                        "example": "",
+                        "timeline_months": 0,
+                        "value_impact": 0.0
+                    },
+                    "growth_value": {
+                        "example": "",
+                        "timeline_months": 0,
+                        "value_impact": 0.0
+                    }
                 },
-                "financial_readiness": {
-                    "example": "",
-                    "timeline_months": 0,
-                    "value_impact": 0.0
+                "market_conditions": {
+                    "buyer_priorities": [],  # List of top 3 priorities
+                    "average_sale_time": "",  # e.g., "9-12 months"
+                    "key_trend": "",  # Main trend affecting valuations
+                    "market_timing": ""  # e.g., "Seller's market" or "Buyer's market"
                 },
-                "operational_resilience": {
-                    "example": "",
-                    "timeline_months": 0,
-                    "value_impact": 0.0
-                },
-                "growth_value": {
-                    "example": "",
-                    "timeline_months": 0,
-                    "value_impact": 0.0
-                }
-            },
-            "market_conditions": {
-                "buyer_priorities": [],  # List of top 3 priorities
-                "average_sale_time": "",  # e.g., "9-12 months"
-                "key_trend": "",  # Main trend affecting valuations
-                "market_timing": ""  # e.g., "Seller's market" or "Buyer's market"
-            },
-            "sources": []  # List of sources cited
-        }
-        
-        # Return template for agent to fill
-        return json.dumps({
-            "template": output_structure,
-            "instructions": "Parse the Perplexity response and fill this structure with specific data",
-            "perplexity_content": perplexity_content,
-            "industry": data.get('industry', ''),
-            "location": data.get('location', '')
-        })
-        
-    except Exception as e:
-        logger.error(f"Error formatting research output: {str(e)}")
-        return json.dumps({"error": str(e)})
+                "sources": []  # List of sources cited
+            }
+            
+            # Return template for agent to fill
+            return json.dumps({
+                "template": output_structure,
+                "instructions": "Parse the Perplexity response and fill this structure with specific data",
+                "perplexity_content": perplexity_content,
+                "industry": data.get('industry', ''),
+                "location": data.get('location', '')
+            })
+            
+        except Exception as e:
+            logger.error(f"Error formatting research output: {str(e)}")
+            return json.dumps({"error": str(e)})
+
+# Create tool instances
+research_industry_trends = ResearchIndustryTrendsTool()
+find_exit_benchmarks = FindExitBenchmarksTool()
+format_research_output = FormatResearchOutputTool()
 
 def create_research_agent(llm, prompts: Dict[str, Any]) -> Agent:
     """Create the research agent for industry analysis"""
@@ -417,7 +379,7 @@ def create_research_agent(llm, prompts: Dict[str, Any]) -> Agent:
     You always use the format_research_output tool to structure your findings.
     """
     
-    # Create tools list
+    # Create tools list using instances
     tools = [
         research_industry_trends,
         find_exit_benchmarks,

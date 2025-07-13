@@ -106,11 +106,21 @@ class ExitReadySnapshotCrew:
             description=f"""
 {self.prompts['intake_agent']['task_template']}
 
-TOOL USAGE INSTRUCTIONS:
-Use process_complete_form tool with the form_data JSON string:
-process_complete_form("{json.dumps('{form_data}')}")
+CRITICAL TOOL USAGE:
+You MUST use the process_complete_form tool with the exact form_data provided:
 
-Expected output: JSON with anonymized data and PII mapping confirmation.
+process_complete_form(form_data_str="{'{form_data}'}")
+
+This tool will:
+1. Validate all form fields
+2. Extract and redact PII 
+3. Store PII mapping for later personalization
+4. Log data to CRM and responses sheets
+5. Return anonymized data structure
+
+Do NOT try to use individual tools - use ONLY process_complete_form for complete processing.
+
+Expected output: JSON with anonymized data and confirmation of PII mapping storage.
             """,
             agent=self.agents['intake'],
             expected_output="Structured JSON with anonymized data and PII mapping stored"
@@ -122,12 +132,15 @@ Expected output: JSON with anonymized data and PII mapping confirmation.
             description=f"""
 {self.prompts['research_agent']['task_template']}
 
-TOOL USAGE INSTRUCTIONS:
-1. Use research_industry_trends tool with industry info:
-   research_industry_trends('{{"industry": "{'{industry}'}", "location": "{'{location}'}", "revenue_range": "{'{revenue_range}'}"}}')
+CRITICAL TOOL USAGE:
+1. Use research_industry_trends tool with structured query:
+   research_industry_trends(query='{{"industry": "{'{industry}'}", "location": "{'{location}'}", "revenue_range": "{'{revenue_range}'}"}}')
 
-2. Use format_research_output tool to structure the results:
-   format_research_output('[research results JSON]')
+2. Then use format_research_output tool to structure the results:
+   format_research_output(raw_research='[put the JSON result from step 1 here]')
+
+The research_industry_trends tool calls Perplexity API and returns structured data.
+The format_research_output tool helps you organize that data for other agents.
 
 Expected output: Structured research data with valuation benchmarks, improvement examples, and market conditions.
             """,
@@ -146,17 +159,19 @@ Expected output: Structured research data with valuation benchmarks, improvement
             description=f"""
 {self.prompts['scoring_agent']['task_template']}
 
-TOOL USAGE INSTRUCTIONS:
-For each category (owner_dependence, revenue_quality, financial_readiness, operational_resilience, growth_value):
+CRITICAL TOOL USAGE:
+For each category, use calculate_category_score with structured data:
 
-1. Use calculate_category_score tool with structured data:
-   calculate_category_score('{{"category": "owner_dependence", "responses": {'{anonymized_responses}'}, "research_data": {'{industry_research}'}}}')
+Example for owner_dependence:
+calculate_category_score(category_data='{{"category": "owner_dependence", "responses": {'{anonymized_responses}'}, "research_data": {'{industry_research}'}}}')
 
-2. After scoring all categories, use aggregate_final_scores:
-   aggregate_final_scores('{{"category_scores": {'{category_scores}'}}}')
+Repeat for all 5 categories: owner_dependence, revenue_quality, financial_readiness, operational_resilience, growth_value
 
-3. Finally, use calculate_focus_areas:
-   calculate_focus_areas('{{"category_scores": {'{category_scores}'}, "research_data": {'{industry_research}'}, "exit_timeline": "{'{exit_timeline}'}", "responses": {'{anonymized_responses}'}}}')
+After scoring all categories, aggregate results:
+aggregate_final_scores(all_scores='{{"category_scores": {'{all_category_results}'}}}')
+
+Finally, calculate focus areas:
+calculate_focus_areas(assessment_data='{{"category_scores": {'{category_scores}'}, "research_data": {'{industry_research}'}, "exit_timeline": "{'{exit_timeline}'}", "responses": {'{anonymized_responses}'}}}')
 
 Expected output: Complete scoring with category scores, overall score, readiness level, and focus areas.
             """,
@@ -176,21 +191,21 @@ Expected output: Complete scoring with category scores, overall score, readiness
             description=f"""
 {self.prompts['summary_agent']['task_template']}
 
-TOOL USAGE INSTRUCTIONS:
+CRITICAL TOOL USAGE:
 1. Create executive summary:
-   create_executive_summary('{{"overall_score": {'{scoring_results}'}, "category_scores": {'{category_scores}'}, "focus_areas": {'{focus_areas}'}, "business_info": {'{business_info}'}}}')
+   create_executive_summary(assessment_data='{{"overall_score": {'{scoring_results}'}, "category_scores": {'{category_scores}'}, "focus_areas": {'{focus_areas}'}, "business_info": {'{business_info}'}}}')
 
-2. Generate category summaries for each category:
-   generate_category_summary('{{"category": "owner_dependence", "score_data": {'{category_scores}'}, "industry_context": {'{industry_research}'}}}')
+2. Generate category summaries (repeat for each category):
+   generate_category_summary(category_data='{{"category": "owner_dependence", "score_data": {'{category_score_data}'}, "industry_context": {'{industry_research}'}}}')
 
 3. Generate recommendations:
-   generate_recommendations('{{"focus_areas": {'{focus_areas}'}, "category_scores": {'{category_scores}'}, "business_info": {'{business_info}'}}}')
+   generate_recommendations(full_assessment='{{"focus_areas": {'{focus_areas}'}, "category_scores": {'{category_scores}'}, "business_info": {'{business_info}'}}}')
 
 4. Create industry context:
-   create_industry_context('{{"research_findings": {'{industry_research}'}, "business_info": {'{business_info}'}, "scores": {'{category_scores}'}}}')
+   create_industry_context(industry_data='{{"research_findings": {'{industry_research}'}, "business_info": {'{business_info}'}, "scores": {'{category_scores}'}}}')
 
 5. Structure final report:
-   structure_final_report('{{"executive_summary": {'{executive_summary}'}, "category_summaries": {'{category_summaries}'}, "recommendations": {'{recommendations}'}, "industry_context": {'{industry_context}'}, "business_info": {'{business_info}'}}}')
+   structure_final_report(complete_data='{{"executive_summary": {'{executive_summary}'}, "category_summaries": {'{category_summaries}'}, "recommendations": {'{recommendations}'}, "industry_context": {'{industry_context}'}, "business_info": {'{business_info}'}}}')
 
 Expected output: Complete personalized report ready for QA review.
             """,
@@ -210,18 +225,18 @@ Expected output: Complete personalized report ready for QA review.
             description=f"""
 {self.prompts['qa_agent']['task_template']}
 
-TOOL USAGE INSTRUCTIONS:
+CRITICAL TOOL USAGE:
 1. Check scoring consistency:
-   check_scoring_consistency('{{"scores": {'{scoring_results}'}, "justifications": {'{scoring_results}'}, "responses": {'{anonymized_responses}'}}}')
+   check_scoring_consistency(scoring_data='{{"scores": {'{scoring_results}'}, "justifications": {'{scoring_justifications}'}, "responses": {'{anonymized_responses}'}}}')
 
 2. Verify content quality:
-   verify_content_quality('{{"summary": {'{summary_content}'}, "recommendations": {'{recommendations}'}, "category_summaries": {'{category_summaries}'}}}')
+   verify_content_quality(content_data='{{"summary": {'{summary_content}'}, "recommendations": {'{recommendations}'}, "category_summaries": {'{category_summaries}'}}}')
 
 3. Scan for PII:
-   scan_for_pii('{'{summary_content}'}')
+   scan_for_pii(full_content='{'{summary_content}'}')
 
 4. Validate report structure:
-   validate_report_structure('{{"executive_summary": {'{summary_content}'}, "category_scores": {'{scoring_results}'}, "recommendations": {'{recommendations}'}}}')
+   validate_report_structure(report_data='{{"executive_summary": {'{summary_content}'}, "category_scores": {'{scoring_results}'}, "recommendations": {'{recommendations}'}}}')
 
 Expected output: Quality assessment with approval status and any issues identified.
             """,
@@ -236,18 +251,21 @@ Expected output: Quality assessment with approval status and any issues identifi
             description=f"""
 {self.prompts['pii_reinsertion_agent']['task_template']}
 
-TOOL USAGE INSTRUCTIONS:
-Use the main orchestration tool with the UUID and approved content:
-process_complete_reinsertion('{{"uuid": "{'{uuid}'}", "content": {'{approved_report}'}}}')
+CRITICAL TOOL USAGE:
+Use the main orchestration tool to handle the complete reinsertion process:
+
+process_complete_reinsertion(reinsertion_data='{{"uuid": "{'{uuid}'}", "content": {'{approved_report}'}}}')
 
 This tool will automatically:
-- Retrieve PII mapping for the UUID
+- Retrieve the PII mapping stored by the intake agent
 - Replace all placeholders with actual personal information
 - Add personal touches to recommendations
 - Validate the final output
 - Structure for PDF generation
 
-Expected output: Complete personalized report with all PII properly reinserted.
+IMPORTANT: The UUID must match exactly what the intake agent used to store the PII mapping.
+
+Expected output: Complete personalized report with all PII properly reinserted and ready for delivery.
             """,
             agent=self.agents['pii_reinsertion'],
             expected_output="Complete personalized report ready for PDF generation with all PII properly reinserted",

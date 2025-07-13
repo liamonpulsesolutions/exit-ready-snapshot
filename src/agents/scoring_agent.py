@@ -1,6 +1,7 @@
 from crewai import Agent
-from crewai.tools import tool
-from typing import Dict, Any, List, Tuple
+from crewai.tools import BaseTool
+from pydantic import BaseModel, Field
+from typing import Dict, Any, List, Tuple, Type
 import logging
 from ..utils.json_helper import safe_parse_json
 import json
@@ -18,7 +19,7 @@ DEFAULT_SCORES = {
     "growth_value": 5.0
 }
 
-# Helper functions
+# Helper functions (unchanged)
 def safe_pattern_match(text: str, pattern: str) -> bool:
     """Safely match pattern in text"""
     if not text or len(text) < 10:
@@ -60,123 +61,7 @@ def analyze_pronoun_usage(text: str) -> Dict[str, Any]:
     else:
         return {"ratio": ratio, "pattern": "balanced"}
 
-@tool("calculate_category_score")
-def calculate_category_score(category_data=None) -> str:
-    """
-    Calculate sophisticated score for a category using multiple factors.
-    Handles both structured input and direct category scoring from agent context.
-    """
-    try:
-        logger.info(f"=== CALCULATE CATEGORY SCORE CALLED ===")
-        logger.info(f"Input type: {type(category_data)}")
-        logger.info(f"Input value: {str(category_data)[:300] if category_data else 'No data provided'}...")
-        
-        # Handle case where CrewAI doesn't pass any arguments or passes empty data
-        if category_data is None or (isinstance(category_data, str) and not category_data.strip()):
-            logger.warning("No category data provided - this indicates the agent isn't structuring the tool call properly")
-            
-            # Return a helpful error that shows what the agent should be doing
-            return json.dumps({
-                "error": "AGENT INSTRUCTION: You must call this tool with structured data like: {'category': 'owner_dependence', 'responses': {...}, 'research_data': {...}}",
-                "score": DEFAULT_SCORES.get("owner_dependence", 5.0),  # Default fallback
-                "gaps": ["Tool called without required data structure"],
-                "strengths": [],
-                "debug_info": {
-                    "received_input": str(category_data),
-                    "expected_format": "JSON object with category, responses, and research_data keys"
-                }
-            })
-        
-        # Try to parse the input
-        if isinstance(category_data, str):
-            try:
-                data = json.loads(category_data)
-            except json.JSONDecodeError:
-                # Handle raw category name (fallback)
-                category_name = category_data.strip().lower()
-                if category_name in DEFAULT_SCORES:
-                    return json.dumps({
-                        "error": f"Received category name '{category_name}' but need full data structure",
-                        "score": DEFAULT_SCORES[category_name],
-                        "gaps": ["Incomplete data provided to scoring tool"],
-                        "strengths": []
-                    })
-                else:
-                    data = {}
-        else:
-            data = category_data
-        
-        # Extract required fields
-        category = data.get('category', 'unknown')
-        responses = data.get('responses', {})
-        research_data = data.get('research_data', {})
-        rubric = data.get('rubric', {})
-        
-        logger.info(f"Processing category: {category}")
-        logger.info(f"Available responses: {list(responses.keys()) if responses else 'None'}")
-        
-        # If we still don't have the required data, provide instructions
-        if not category or category == 'unknown':
-            return json.dumps({
-                "error": "Missing 'category' field in input data",
-                "score": 5.0,
-                "gaps": ["Category not specified"],
-                "strengths": [],
-                "agent_instruction": "Call this tool with: {'category': 'owner_dependence', 'responses': {...}, 'research_data': {...}}"
-            })
-        
-        if not responses:
-            logger.warning(f"No responses provided for category {category}")
-            return json.dumps({
-                "error": f"No responses provided for category {category}",
-                "score": DEFAULT_SCORES.get(category, 5.0),
-                "gaps": [f"No response data available for {category} analysis"],
-                "strengths": []
-            })
-        
-        # Route to appropriate scoring function
-        if category == 'owner_dependence':
-            result = score_owner_dependence(responses, research_data)
-        elif category == 'revenue_quality':
-            result = score_revenue_quality(responses, research_data)
-        elif category == 'financial_readiness':
-            result = score_financial_readiness(responses, research_data)
-        elif category == 'operational_resilience':
-            result = score_operational_resilience(responses, research_data)
-        elif category == 'growth_value':
-            result = score_growth_value(responses, research_data)
-        else:
-            result = {
-                "score": DEFAULT_SCORES.get(category, 5.0),
-                "error": f"Unknown category: {category}",
-                "gaps": [f"Scoring logic not implemented for {category}"],
-                "strengths": []
-            }
-        
-        # Ensure required fields are present
-        if 'weight' not in result:
-            weights = {
-                'owner_dependence': 0.25,
-                'revenue_quality': 0.25,
-                'financial_readiness': 0.20,
-                'operational_resilience': 0.15,
-                'growth_value': 0.15
-            }
-            result['weight'] = weights.get(category, 0.20)
-        
-        logger.info(f"Category {category} scored: {result.get('score', 'N/A')}")
-        return json.dumps(result)
-        
-    except Exception as e:
-        logger.error(f"Error calculating category score: {str(e)}", exc_info=True)
-        return json.dumps({
-            "error": f"Scoring error: {str(e)}",
-            "score": 5.0,
-            "gaps": ["Error in scoring calculation"],
-            "strengths": [],
-            "debug_info": str(category_data) if category_data else "No input data"
-        })
-
+# Scoring functions (unchanged - keeping all the sophisticated logic)
 def score_owner_dependence(responses: Dict[str, str], research_data: Dict[str, Any]) -> Dict[str, Any]:
     """Score owner dependence with sophisticated analysis"""
     # Initialize
@@ -793,233 +678,394 @@ def score_growth_value(responses: Dict[str, str], research_data: Dict[str, Any])
         }
     }
 
-@tool("aggregate_final_scores")
-def aggregate_final_scores(all_scores=None) -> str:
-    """
-    Calculate weighted overall score and readiness level
-    """
-    try:
-        logger.info(f"=== AGGREGATE FINAL SCORES CALLED ===")
-        logger.info(f"Input type: {type(all_scores)}")
-        
-        # Handle case where CrewAI doesn't pass any arguments
-        if all_scores is None:
-            logger.warning("No scores data provided - using defaults")
-            return json.dumps({
-                "error": "No scores data provided",
-                "overall_score": 5.0,
-                "readiness_level": "Unable to Calculate"
-            })
-        
-        # Use safe JSON parsing
-        data = safe_parse_json(all_scores, {}, "aggregate_final_scores")
-        if not data:
-            return json.dumps({
-                "error": "No scores data provided",
-                "overall_score": 5.0,
-                "readiness_level": "Unable to Calculate"
-            })
-        
-        category_scores = data.get('category_scores', {})
-        
-        # Calculate weighted average
-        total_weight = 0
-        weighted_sum = 0
-        
-        for category, score_data in category_scores.items():
-            score = score_data.get('score', 5.0)
-            weight = score_data.get('weight', 0.20)
-            weighted_sum += score * weight
-            total_weight += weight
-        
-        overall_score = weighted_sum / total_weight if total_weight > 0 else 5.0
-        
-        # Determine readiness level
-        if overall_score >= 8.1:
-            readiness_level = "Exit Ready"
-            readiness_description = "Well-positioned for a successful exit"
-        elif overall_score >= 6.6:
-            readiness_level = "Approaching Ready"
-            readiness_description = "Solid foundation with clear improvement areas"
-        elif overall_score >= 4.1:
-            readiness_level = "Needs Work"
-            readiness_description = "Significant improvements needed before exit"
-        else:
-            readiness_level = "Not Ready"
-            readiness_description = "Major transformation required"
-        
-        # Risk factor analysis
-        risk_factors = {
-            'high_owner_dependence': category_scores.get('owner_dependence', {}).get('score', 10) < 4,
-            'revenue_concentration': any('concentration' in gap and '%' in gap 
-                                       for gap in category_scores.get('revenue_quality', {}).get('gaps', [])),
-            'poor_documentation': category_scores.get('operational_resilience', {}).get('score', 10) < 4,
-            'declining_margins': any('decline' in gap.lower() 
-                                   for gap in category_scores.get('financial_readiness', {}).get('gaps', [])),
-            'no_value_drivers': category_scores.get('growth_value', {}).get('score', 10) < 4
-        }
-        
-        active_risks = sum(1 for risk in risk_factors.values() if risk)
-        
-        # Compound risk adjustment
-        if active_risks >= 4:
-            overall_score *= 0.9
-            risk_note = "Multiple risk factors compound buyer concerns"
-        elif active_risks >= 3:
-            overall_score *= 0.95
-            risk_note = "Several risk factors present"
-        elif active_risks == 0:
-            overall_score *= 1.05
-            risk_note = "Limited risk factors increase attractiveness"
-        else:
-            risk_note = ""
-        
-        return json.dumps({
-            "overall_score": round(overall_score, 1),
-            "readiness_level": readiness_level,
-            "readiness_description": readiness_description,
-            "active_risk_count": active_risks,
-            "risk_factors": risk_factors,
-            "risk_note": risk_note,
-            "calculation_method": "weighted_average_with_risk_adjustment"
-        })
-        
-    except Exception as e:
-        logger.error(f"Error aggregating scores: {str(e)}")
-        return json.dumps({
-            "error": str(e),
-            "overall_score": 5.0,
-            "readiness_level": "Unable to Calculate"
-        })
+# Tool Input Schemas
+class CalculateCategoryScoreInput(BaseModel):
+    category_data: str = Field(
+        default="{}",
+        description="JSON string containing category, responses, research_data, and rubric"
+    )
 
-@tool("calculate_focus_areas")
-def calculate_focus_areas(assessment_data=None) -> str:
+class AggregateFinalScoresInput(BaseModel):
+    all_scores: str = Field(
+        default="{}",
+        description="JSON string containing all category scores"
+    )
+
+class CalculateFocusAreasInput(BaseModel):
+    assessment_data: str = Field(
+        default="{}",
+        description="JSON string containing category_scores, research_data, exit_timeline, and responses"
+    )
+
+# Tool Classes
+class CalculateCategoryScoreTool(BaseTool):
+    name: str = "calculate_category_score"
+    description: str = """
+    Calculate sophisticated score for a category using multiple factors.
+    Handles both structured input and direct category scoring from agent context.
+    
+    Input should be JSON string containing:
+    {"category": "owner_dependence", "responses": {...}, "research_data": {...}, "rubric": {...}}
+    
+    Returns detailed scoring with strengths, gaps, and industry context.
     """
-    Determine priority focus areas based on ROI calculation
-    """
-    try:
-        logger.info(f"=== CALCULATE FOCUS AREAS CALLED ===")
-        logger.info(f"Input type: {type(assessment_data)}")
-        
-        # Handle case where CrewAI doesn't pass any arguments
-        if assessment_data is None:
-            logger.warning("No assessment data provided - using defaults")
-            return json.dumps({
-                "error": "No assessment data provided",
-                "primary_focus": None
-            })
-        
-        # Use safe JSON parsing
-        data = safe_parse_json(assessment_data, {}, "calculate_focus_areas")
-        if not data:
-            return json.dumps({
-                "error": "No assessment data provided",
-                "primary_focus": None
-            })
-        
-        category_scores = data.get('category_scores', {})
-        research_data = data.get('research_data', {})
-        exit_timeline = data.get('exit_timeline', 'Unknown')
-        responses = data.get('responses', {})
-        
-        focus_scores = []
-        
-        for category, score_data in category_scores.items():
-            current_score = score_data.get('score', 5.0)
-            potential_improvement = 10 - current_score
+    args_schema: Type[BaseModel] = CalculateCategoryScoreInput
+    
+    def _run(self, category_data: str = "{}", **kwargs) -> str:
+        try:
+            logger.info(f"=== CALCULATE CATEGORY SCORE CALLED ===")
+            logger.info(f"Input type: {type(category_data)}")
+            logger.info(f"Input value: {str(category_data)[:300] if category_data else 'No data provided'}...")
             
-            # Get improvement data from research
-            improvements = research_data.get('improvements', {})
-            category_improvement = improvements.get(category, {})
+            # Handle case where CrewAI doesn't pass any arguments or passes empty data
+            if category_data is None or (isinstance(category_data, str) and not category_data.strip()):
+                logger.warning("No category data provided - this indicates the agent isn't structuring the tool call properly")
+                
+                # Return a helpful error that shows what the agent should be doing
+                return json.dumps({
+                    "error": "AGENT INSTRUCTION: You must call this tool with structured data like: {'category': 'owner_dependence', 'responses': {...}, 'research_data': {...}}",
+                    "score": DEFAULT_SCORES.get("owner_dependence", 5.0),  # Default fallback
+                    "gaps": ["Tool called without required data structure"],
+                    "strengths": [],
+                    "debug_info": {
+                        "received_input": str(category_data),
+                        "expected_format": "JSON object with category, responses, and research_data keys"
+                    }
+                })
             
-            # Default values if not in research
-            typical_timeline = category_improvement.get('timeline_months', 6)
-            typical_impact = category_improvement.get('value_impact', 0.15)
-            
-            # Timeline urgency multiplier
-            timeline_multiplier = 1.0
-            if "Already in discussions" in exit_timeline:
-                timeline_multiplier = 3.0 if typical_timeline <= 3 else 0.3
-            elif "1-2 years" in exit_timeline:
-                timeline_multiplier = 2.0 if typical_timeline <= 6 else 0.7
-            elif "2-3 years" in exit_timeline:
-                timeline_multiplier = 1.5
+            # Try to parse the input
+            if isinstance(category_data, str):
+                try:
+                    data = json.loads(category_data)
+                except json.JSONDecodeError:
+                    # Handle raw category name (fallback)
+                    category_name = category_data.strip().lower()
+                    if category_name in DEFAULT_SCORES:
+                        return json.dumps({
+                            "error": f"Received category name '{category_name}' but need full data structure",
+                            "score": DEFAULT_SCORES[category_name],
+                            "gaps": ["Incomplete data provided to scoring tool"],
+                            "strengths": []
+                        })
+                    else:
+                        data = {}
             else:
-                timeline_multiplier = 1.0
+                data = category_data
             
-            # Check for value killers
-            is_value_killer = False
-            killer_reason = ""
+            # Extract required fields
+            category = data.get('category', 'unknown')
+            responses = data.get('responses', {})
+            research_data = data.get('research_data', {})
+            rubric = data.get('rubric', {})
             
-            if category == "owner_dependence" and current_score < 4:
-                is_value_killer = True
-                killer_reason = "Severe owner dependence will deter most buyers"
-                typical_impact *= 2
+            logger.info(f"Processing category: {category}")
+            logger.info(f"Available responses: {list(responses.keys()) if responses else 'None'}")
             
-            elif category == "revenue_quality":
-                # Check for high concentration
-                gaps = score_data.get('gaps', [])
-                for gap in gaps:
-                    if 'concentration' in gap and '%' in gap:
-                        try:
-                            concentration = int(re.search(r'(\d+)%', gap).group(1))
-                            if concentration > 40:
-                                is_value_killer = True
-                                killer_reason = f"{concentration}% revenue concentration is a deal breaker"
-                                typical_impact *= 1.5
-                                break
-                        except:
-                            pass
+            # If we still don't have the required data, provide instructions
+            if not category or category == 'unknown':
+                return json.dumps({
+                    "error": "Missing 'category' field in input data",
+                    "score": 5.0,
+                    "gaps": ["Category not specified"],
+                    "strengths": [],
+                    "agent_instruction": "Call this tool with: {'category': 'owner_dependence', 'responses': {...}, 'research_data': {...}}"
+                })
             
-            # Calculate ROI score
-            effort_factor = 1.0 / (typical_timeline / 6)  # 6 months = baseline
-            roi_score = potential_improvement * typical_impact * timeline_multiplier * effort_factor * 100
+            if not responses:
+                logger.warning(f"No responses provided for category {category}")
+                return json.dumps({
+                    "error": f"No responses provided for category {category}",
+                    "score": DEFAULT_SCORES.get(category, 5.0),
+                    "gaps": [f"No response data available for {category} analysis"],
+                    "strengths": []
+                })
             
-            if is_value_killer:
-                roi_score *= 2  # Double priority for value killers
+            # Route to appropriate scoring function
+            if category == 'owner_dependence':
+                result = score_owner_dependence(responses, research_data)
+            elif category == 'revenue_quality':
+                result = score_revenue_quality(responses, research_data)
+            elif category == 'financial_readiness':
+                result = score_financial_readiness(responses, research_data)
+            elif category == 'operational_resilience':
+                result = score_operational_resilience(responses, research_data)
+            elif category == 'growth_value':
+                result = score_growth_value(responses, research_data)
+            else:
+                result = {
+                    "score": DEFAULT_SCORES.get(category, 5.0),
+                    "error": f"Unknown category: {category}",
+                    "gaps": [f"Scoring logic not implemented for {category}"],
+                    "strengths": []
+                }
             
-            # Determine quick win potential
-            is_quick_win = typical_timeline <= 3 and typical_impact >= 0.1
+            # Ensure required fields are present
+            if 'weight' not in result:
+                weights = {
+                    'owner_dependence': 0.25,
+                    'revenue_quality': 0.25,
+                    'financial_readiness': 0.20,
+                    'operational_resilience': 0.15,
+                    'growth_value': 0.15
+                }
+                result['weight'] = weights.get(category, 0.20)
             
-            # Generate specific reasoning
-            reasoning = generate_focus_reasoning(
-                category, current_score, is_value_killer, killer_reason,
-                is_quick_win, typical_timeline, typical_impact
-            )
+            logger.info(f"Category {category} scored: {result.get('score', 'N/A')}")
+            return json.dumps(result)
             
-            focus_scores.append({
-                'category': category,
-                'roi_score': round(roi_score, 1),
-                'current_score': current_score,
-                'improvement_potential': round(potential_improvement, 1),
-                'is_value_killer': is_value_killer,
-                'is_quick_win': is_quick_win,
-                'typical_timeline_months': typical_timeline,
-                'expected_impact': f"{int(typical_impact * 100)}%",
-                'reasoning': reasoning
+        except Exception as e:
+            logger.error(f"Error calculating category score: {str(e)}", exc_info=True)
+            return json.dumps({
+                "error": f"Scoring error: {str(e)}",
+                "score": 5.0,
+                "gaps": ["Error in scoring calculation"],
+                "strengths": [],
+                "debug_info": str(category_data) if category_data else "No input data"
             })
-        
-        # Sort by ROI score
-        focus_scores.sort(key=lambda x: x['roi_score'], reverse=True)
-        
-        # Get specific action items for top priorities
-        for i, focus in enumerate(focus_scores[:3]):
-            focus['quick_actions'] = generate_quick_actions(
-                focus['category'],
-                category_scores[focus['category']],
-                responses
-            )
-        
-        return json.dumps({
-            'primary_focus': focus_scores[0] if focus_scores else None,
-            'secondary_focus': focus_scores[1] if len(focus_scores) > 1 else None,
-            'tertiary_focus': focus_scores[2] if len(focus_scores) > 2 else None,
-            'all_focus_areas': focus_scores
-        })
-        
-    except Exception as e:
-        logger.error(f"Error calculating focus areas: {str(e)}")
-        return json.dumps({"error": str(e), "primary_focus": None})
+
+class AggregateFinalScoresTool(BaseTool):
+    name: str = "aggregate_final_scores"
+    description: str = """
+    Calculate weighted overall score and readiness level from all category scores.
+    
+    Input should be JSON string containing all category scores:
+    {"category_scores": {"owner_dependence": {"score": 6.5, "weight": 0.25}, ...}}
+    
+    Returns overall score, readiness level, and risk analysis.
+    """
+    args_schema: Type[BaseModel] = AggregateFinalScoresInput
+    
+    def _run(self, all_scores: str = "{}", **kwargs) -> str:
+        try:
+            logger.info(f"=== AGGREGATE FINAL SCORES CALLED ===")
+            logger.info(f"Input type: {type(all_scores)}")
+            
+            # Handle case where CrewAI doesn't pass any arguments
+            if all_scores is None:
+                logger.warning("No scores data provided - using defaults")
+                return json.dumps({
+                    "error": "No scores data provided",
+                    "overall_score": 5.0,
+                    "readiness_level": "Unable to Calculate"
+                })
+            
+            # Use safe JSON parsing
+            data = safe_parse_json(all_scores, {}, "aggregate_final_scores")
+            if not data:
+                return json.dumps({
+                    "error": "No scores data provided",
+                    "overall_score": 5.0,
+                    "readiness_level": "Unable to Calculate"
+                })
+            
+            category_scores = data.get('category_scores', {})
+            
+            # Calculate weighted average
+            total_weight = 0
+            weighted_sum = 0
+            
+            for category, score_data in category_scores.items():
+                score = score_data.get('score', 5.0)
+                weight = score_data.get('weight', 0.20)
+                weighted_sum += score * weight
+                total_weight += weight
+            
+            overall_score = weighted_sum / total_weight if total_weight > 0 else 5.0
+            
+            # Determine readiness level
+            if overall_score >= 8.1:
+                readiness_level = "Exit Ready"
+                readiness_description = "Well-positioned for a successful exit"
+            elif overall_score >= 6.6:
+                readiness_level = "Approaching Ready"
+                readiness_description = "Solid foundation with clear improvement areas"
+            elif overall_score >= 4.1:
+                readiness_level = "Needs Work"
+                readiness_description = "Significant improvements needed before exit"
+            else:
+                readiness_level = "Not Ready"
+                readiness_description = "Major transformation required"
+            
+            # Risk factor analysis
+            risk_factors = {
+                'high_owner_dependence': category_scores.get('owner_dependence', {}).get('score', 10) < 4,
+                'revenue_concentration': any('concentration' in gap and '%' in gap 
+                                           for gap in category_scores.get('revenue_quality', {}).get('gaps', [])),
+                'poor_documentation': category_scores.get('operational_resilience', {}).get('score', 10) < 4,
+                'declining_margins': any('decline' in gap.lower() 
+                                       for gap in category_scores.get('financial_readiness', {}).get('gaps', [])),
+                'no_value_drivers': category_scores.get('growth_value', {}).get('score', 10) < 4
+            }
+            
+            active_risks = sum(1 for risk in risk_factors.values() if risk)
+            
+            # Compound risk adjustment
+            if active_risks >= 4:
+                overall_score *= 0.9
+                risk_note = "Multiple risk factors compound buyer concerns"
+            elif active_risks >= 3:
+                overall_score *= 0.95
+                risk_note = "Several risk factors present"
+            elif active_risks == 0:
+                overall_score *= 1.05
+                risk_note = "Limited risk factors increase attractiveness"
+            else:
+                risk_note = ""
+            
+            return json.dumps({
+                "overall_score": round(overall_score, 1),
+                "readiness_level": readiness_level,
+                "readiness_description": readiness_description,
+                "active_risk_count": active_risks,
+                "risk_factors": risk_factors,
+                "risk_note": risk_note,
+                "calculation_method": "weighted_average_with_risk_adjustment"
+            })
+            
+        except Exception as e:
+            logger.error(f"Error aggregating scores: {str(e)}")
+            return json.dumps({
+                "error": str(e),
+                "overall_score": 5.0,
+                "readiness_level": "Unable to Calculate"
+            })
+
+class CalculateFocusAreasTool(BaseTool):
+    name: str = "calculate_focus_areas"
+    description: str = """
+    Determine priority focus areas based on ROI calculation.
+    
+    Input should be JSON string containing:
+    {"category_scores": {...}, "research_data": {...}, "exit_timeline": "1-2 years", "responses": {...}}
+    
+    Returns prioritized focus areas with ROI calculations and specific actions.
+    """
+    args_schema: Type[BaseModel] = CalculateFocusAreasInput
+    
+    def _run(self, assessment_data: str = "{}", **kwargs) -> str:
+        try:
+            logger.info(f"=== CALCULATE FOCUS AREAS CALLED ===")
+            logger.info(f"Input type: {type(assessment_data)}")
+            
+            # Handle case where CrewAI doesn't pass any arguments
+            if assessment_data is None:
+                logger.warning("No assessment data provided - using defaults")
+                return json.dumps({
+                    "error": "No assessment data provided",
+                    "primary_focus": None
+                })
+            
+            # Use safe JSON parsing
+            data = safe_parse_json(assessment_data, {}, "calculate_focus_areas")
+            if not data:
+                return json.dumps({
+                    "error": "No assessment data provided",
+                    "primary_focus": None
+                })
+            
+            category_scores = data.get('category_scores', {})
+            research_data = data.get('research_data', {})
+            exit_timeline = data.get('exit_timeline', 'Unknown')
+            responses = data.get('responses', {})
+            
+            focus_scores = []
+            
+            for category, score_data in category_scores.items():
+                current_score = score_data.get('score', 5.0)
+                potential_improvement = 10 - current_score
+                
+                # Get improvement data from research
+                improvements = research_data.get('improvements', {})
+                category_improvement = improvements.get(category, {})
+                
+                # Default values if not in research
+                typical_timeline = category_improvement.get('timeline_months', 6)
+                typical_impact = category_improvement.get('value_impact', 0.15)
+                
+                # Timeline urgency multiplier
+                timeline_multiplier = 1.0
+                if "Already in discussions" in exit_timeline:
+                    timeline_multiplier = 3.0 if typical_timeline <= 3 else 0.3
+                elif "1-2 years" in exit_timeline:
+                    timeline_multiplier = 2.0 if typical_timeline <= 6 else 0.7
+                elif "2-3 years" in exit_timeline:
+                    timeline_multiplier = 1.5
+                else:
+                    timeline_multiplier = 1.0
+                
+                # Check for value killers
+                is_value_killer = False
+                killer_reason = ""
+                
+                if category == "owner_dependence" and current_score < 4:
+                    is_value_killer = True
+                    killer_reason = "Severe owner dependence will deter most buyers"
+                    typical_impact *= 2
+                
+                elif category == "revenue_quality":
+                    # Check for high concentration
+                    gaps = score_data.get('gaps', [])
+                    for gap in gaps:
+                        if 'concentration' in gap and '%' in gap:
+                            try:
+                                concentration = int(re.search(r'(\d+)%', gap).group(1))
+                                if concentration > 40:
+                                    is_value_killer = True
+                                    killer_reason = f"{concentration}% revenue concentration is a deal breaker"
+                                    typical_impact *= 1.5
+                                    break
+                            except:
+                                pass
+                
+                # Calculate ROI score
+                effort_factor = 1.0 / (typical_timeline / 6)  # 6 months = baseline
+                roi_score = potential_improvement * typical_impact * timeline_multiplier * effort_factor * 100
+                
+                if is_value_killer:
+                    roi_score *= 2  # Double priority for value killers
+                
+                # Determine quick win potential
+                is_quick_win = typical_timeline <= 3 and typical_impact >= 0.1
+                
+                # Generate specific reasoning
+                reasoning = generate_focus_reasoning(
+                    category, current_score, is_value_killer, killer_reason,
+                    is_quick_win, typical_timeline, typical_impact
+                )
+                
+                focus_scores.append({
+                    'category': category,
+                    'roi_score': round(roi_score, 1),
+                    'current_score': current_score,
+                    'improvement_potential': round(potential_improvement, 1),
+                    'is_value_killer': is_value_killer,
+                    'is_quick_win': is_quick_win,
+                    'typical_timeline_months': typical_timeline,
+                    'expected_impact': f"{int(typical_impact * 100)}%",
+                    'reasoning': reasoning
+                })
+            
+            # Sort by ROI score
+            focus_scores.sort(key=lambda x: x['roi_score'], reverse=True)
+            
+            # Get specific action items for top priorities
+            for i, focus in enumerate(focus_scores[:3]):
+                focus['quick_actions'] = generate_quick_actions(
+                    focus['category'],
+                    category_scores[focus['category']],
+                    responses
+                )
+            
+            return json.dumps({
+                'primary_focus': focus_scores[0] if focus_scores else None,
+                'secondary_focus': focus_scores[1] if len(focus_scores) > 1 else None,
+                'tertiary_focus': focus_scores[2] if len(focus_scores) > 2 else None,
+                'all_focus_areas': focus_scores
+            })
+            
+        except Exception as e:
+            logger.error(f"Error calculating focus areas: {str(e)}")
+            return json.dumps({"error": str(e), "primary_focus": None})
 
 def generate_focus_reasoning(category, score, is_value_killer, killer_reason, 
                            is_quick_win, timeline, impact):
@@ -1093,11 +1139,17 @@ def generate_quick_actions(category, score_data, responses):
     
     return actions[:3]  # Return top 3 actions
 
+# Create tool instances
+calculate_category_score = CalculateCategoryScoreTool()
+aggregate_final_scores = AggregateFinalScoresTool()
+calculate_focus_areas = CalculateFocusAreasTool()
+
 def create_scoring_agent(llm, prompts: Dict[str, Any], scoring_rubric: Dict[str, Any]) -> Agent:
     """Create the enhanced scoring agent"""
     
     config = prompts.get('scoring_agent', {})
     
+    # Create tools list using instances
     tools = [
         calculate_category_score,
         aggregate_final_scores,
