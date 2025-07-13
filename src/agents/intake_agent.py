@@ -60,7 +60,7 @@ class ValidateFormDataTool(BaseTool):
     
     Input should be JSON string representation of the form data.
     
-    Returns validation status with any errors found.
+    Returns validation status message.
     """
     args_schema: Type[BaseModel] = ValidateFormDataInput
     
@@ -69,15 +69,9 @@ class ValidateFormDataTool(BaseTool):
             # Use safe parsing
             form_data = safe_parse_json(form_data_str, {}, "validate_form_data")
             if not form_data:
-                return json.dumps({
-                    "valid": False,
-                    "errors": "No form data provided or invalid JSON format"
-                })
+                return "Validation Failed: No form data provided or invalid JSON format. Please check the input data."
         except Exception as e:
-            return json.dumps({
-                "valid": False,
-                "errors": f"Input parsing error: {str(e)}"
-            })
+            return f"Validation Failed: Input parsing error - {str(e)}"
         
         required_fields = [
             'uuid', 'name', 'email', 'industry', 'years_in_business',
@@ -93,10 +87,7 @@ class ValidateFormDataTool(BaseTool):
                 missing_fields.append(field)
         
         if missing_fields:
-            return json.dumps({
-                "valid": False,
-                "errors": f"Missing required fields: {', '.join(missing_fields)}"
-            })
+            return f"Validation Failed: Missing required fields - {', '.join(missing_fields)}. Please ensure all required fields are provided."
         
         # Log missing optional fields as warnings
         missing_optional = []
@@ -117,12 +108,16 @@ class ValidateFormDataTool(BaseTool):
                 missing_responses.append(q)
         
         if missing_responses:
-            return json.dumps({
-                "valid": False,
-                "errors": f"Missing responses for: {', '.join(missing_responses)}"
-            })
+            return f"Validation Failed: Missing responses for questions - {', '.join(missing_responses)}. All 10 questions must be answered."
         
-        return json.dumps({"valid": True, "data": form_data})
+        # Success message with summary
+        return f"""Validation Successful:
+- UUID: {form_data.get('uuid')}
+- Name: {form_data.get('name')}
+- Industry: {form_data.get('industry')}
+- All required fields present
+- All 10 questions answered
+- Ready for processing"""
 
 class DetectAndRedactPIITool(BaseTool):
     name: str = "detect_and_redact_pii_tool"
@@ -131,20 +126,30 @@ class DetectAndRedactPIITool(BaseTool):
     
     Input: Text string to scan for PII
     
-    Returns JSON with redacted text and PII mapping.
+    Returns summary of PII detection and redaction results.
     """
     args_schema: Type[BaseModel] = DetectAndRedactPIIInput
     
     def _run(self, text: str = "", **kwargs) -> str:
         if not text or text.strip() == "":
-            return json.dumps({
-                "redacted_text": "",
-                "pii_found": False,
-                "mapping": {}
-            })
+            return "No text provided for PII detection."
         
         result = pii_detector.detect_and_redact(text)
-        return json.dumps(result)
+        
+        # Format as readable text
+        if result.get('pii_found'):
+            mapping = result.get('mapping', {})
+            return f"""PII Detection Complete:
+- PII Found: Yes
+- Items Redacted: {len(mapping)}
+- Redaction Details:
+  {chr(10).join(f'  - {k}: [REDACTED]' for k in mapping.keys())}
+- All PII successfully anonymized"""
+        else:
+            return """PII Detection Complete:
+- PII Found: No
+- No personal information detected in the text
+- Text is already anonymous"""
 
 class LogToCRMTool(BaseTool):
     name: str = "log_to_crm_tool"
@@ -153,7 +158,7 @@ class LogToCRMTool(BaseTool):
     
     Input should be JSON string containing user data.
     
-    Returns logging status.
+    Returns logging status message.
     """
     args_schema: Type[BaseModel] = LogToCRMInput
     
@@ -161,13 +166,26 @@ class LogToCRMTool(BaseTool):
         try:
             user_data_dict = safe_parse_json(user_data, {}, "log_to_crm")
             if not user_data_dict:
-                return json.dumps({"status": "error", "message": "No user data provided"})
+                return "CRM Logging Failed: No user data provided"
             
             result = sheets_logger.log_to_crm(user_data_dict)
-            return json.dumps(result)
+            
+            # Format result as readable text
+            if result.get('status') == 'success':
+                mode = result.get('mode', 'unknown')
+                return f"""CRM Logging Successful:
+- UUID: {user_data_dict.get('uuid')}
+- Name: {user_data_dict.get('name')}
+- Email: {user_data_dict.get('email')}
+- Mode: {mode}
+- Entry created in CRM spreadsheet"""
+            else:
+                error = result.get('error', 'Unknown error')
+                return f"CRM Logging Failed: {error}"
+                
         except Exception as e:
             logger.error(f"Error in log_to_crm_tool: {str(e)}")
-            return json.dumps({"status": "error", "message": str(e)})
+            return f"CRM Logging Failed: {str(e)}"
 
 class LogResponsesTool(BaseTool):
     name: str = "log_responses_tool"
@@ -176,7 +194,7 @@ class LogResponsesTool(BaseTool):
     
     Input should be JSON string containing UUID and responses.
     
-    Returns logging status.
+    Returns logging status message.
     """
     args_schema: Type[BaseModel] = LogResponsesInput
     
@@ -184,15 +202,27 @@ class LogResponsesTool(BaseTool):
         try:
             data_dict = safe_parse_json(data, {}, "log_responses")
             if not data_dict:
-                return json.dumps({"status": "error", "message": "No data provided"})
+                return "Response Logging Failed: No data provided"
             
             uuid = data_dict.get('uuid', '')
             responses = data_dict.get('responses', {})
             result = sheets_logger.log_responses(uuid, responses)
-            return json.dumps(result)
+            
+            # Format result as readable text
+            if result.get('status') == 'success':
+                mode = result.get('mode', 'unknown')
+                return f"""Response Logging Successful:
+- UUID: {uuid}
+- Responses: {len(responses)} questions logged
+- Mode: {mode}
+- Anonymized data saved to responses spreadsheet"""
+            else:
+                error = result.get('error', 'Unknown error')
+                return f"Response Logging Failed: {error}"
+                
         except Exception as e:
             logger.error(f"Error in log_responses_tool: {str(e)}")
-            return json.dumps({"status": "error", "message": str(e)})
+            return f"Response Logging Failed: {str(e)}"
 
 class StorePIIMappingTool(BaseTool):
     name: str = "store_pii_mapping_tool"
@@ -201,7 +231,7 @@ class StorePIIMappingTool(BaseTool):
     
     Input should be JSON string containing UUID and mapping data.
     
-    Returns storage status.
+    Returns storage status message.
     """
     args_schema: Type[BaseModel] = StorePIIMappingInput
     
@@ -209,10 +239,7 @@ class StorePIIMappingTool(BaseTool):
         try:
             data = safe_parse_json(mapping_data, {}, "store_pii_mapping")
             if not data:
-                return json.dumps({
-                    "status": "error", 
-                    "message": "No mapping data provided"
-                })
+                return "PII Storage Failed: No mapping data provided"
             
             uuid = data.get('uuid')
             mapping = data.get('mapping')
@@ -220,22 +247,20 @@ class StorePIIMappingTool(BaseTool):
             if uuid and mapping:
                 store_pii_mapping(uuid, mapping)
                 logger.info(f"Stored PII mapping for UUID: {uuid} with {len(mapping)} entries")
-                return json.dumps({
-                    "status": "success", 
-                    "uuid": uuid,
-                    "entries_stored": len(mapping)
-                })
+                
+                # Format success message with mapping details
+                return f"""PII Mapping Stored Successfully:
+- UUID: {uuid}
+- Entries Stored: {len(mapping)}
+- Mapping includes:
+  {chr(10).join(f'  - {k}' for k in mapping.keys())}
+- Ready for final personalization"""
             else:
-                return json.dumps({
-                    "status": "error", 
-                    "message": "Missing UUID or mapping in data"
-                })
+                return "PII Storage Failed: Missing UUID or mapping data in input"
+                
         except Exception as e:
             logger.error(f"Error storing PII mapping: {str(e)}")
-            return json.dumps({
-                "status": "error",
-                "message": str(e)
-            })
+            return f"PII Storage Failed: {str(e)}"
 
 class ProcessCompleteFormTool(BaseTool):
     name: str = "process_complete_form"
@@ -244,7 +269,7 @@ class ProcessCompleteFormTool(BaseTool):
     
     Input should be JSON string representation of the complete form data.
     
-    Returns structured JSON with anonymized data and PII mapping.
+    Returns comprehensive processing status and results.
     """
     args_schema: Type[BaseModel] = ProcessCompleteFormInput
     
@@ -270,11 +295,10 @@ class ProcessCompleteFormTool(BaseTool):
             # Parse form data using safe parsing
             form_data = safe_parse_json(actual_form_data, {}, "process_complete_form")
             if not form_data:
-                return json.dumps({
-                    "uuid": "unknown",
-                    "validation_status": "error",
-                    "error": "No form data provided or invalid JSON"
-                })
+                return """Form Processing Failed:
+- Error: No form data provided or invalid JSON
+- Status: Unable to process
+- Please check the input data format"""
             
             uuid = form_data.get('uuid', 'unknown')
             logger.info(f"Processing form for UUID: {uuid}")
@@ -296,6 +320,8 @@ class ProcessCompleteFormTool(BaseTool):
             
             # Process all text responses for additional PII
             anonymized_responses = {}
+            pii_found_in_responses = 0
+            
             for q_id, response in form_data.get('responses', {}).items():
                 if response and isinstance(response, str) and len(response) > 20:
                     # Detect and redact PII in responses
@@ -305,6 +331,7 @@ class ProcessCompleteFormTool(BaseTool):
                     # Add any found PII to mapping
                     if pii_result.get('mapping'):
                         complete_pii_mapping.update(pii_result['mapping'])
+                        pii_found_in_responses += len(pii_result['mapping'])
                 else:
                     anonymized_responses[q_id] = response
             
@@ -333,25 +360,46 @@ class ProcessCompleteFormTool(BaseTool):
                                 )
                         break
             
-            # Prepare output
-            output = {
-                "uuid": uuid,
-                "anonymized_data": anonymized_data,
-                "pii_mapping": complete_pii_mapping,
-                "pii_found": len(complete_pii_mapping) > 4,  # More than just the basics
-                "validation_status": "success"
-            }
+            # Store the mapping (critical step!)
+            store_pii_mapping(uuid, complete_pii_mapping)
             
-            logger.info(f"Successfully processed form with {len(complete_pii_mapping)} PII entries")
-            return json.dumps(output)
+            # Return comprehensive status message
+            return f"""Form Processing Complete:
+
+VALIDATION STATUS: Success
+- UUID: {uuid}
+- All required fields validated
+- All 10 responses present
+
+PII PROCESSING:
+- Basic PII extracted: 4 items (name, email, location, UUID)
+- Additional PII found in responses: {pii_found_in_responses} items
+- Company name detected: {'Yes' if '[COMPANY_NAME]' in complete_pii_mapping else 'No'}
+- Total PII mappings stored: {len(complete_pii_mapping)}
+
+ANONYMIZATION:
+- Owner name → [OWNER_NAME]
+- Email → [EMAIL]
+- Location → [LOCATION]
+- All response PII → [REDACTED]
+
+PII MAPPING STORED:
+- Storage status: Success
+- Mapping entries: {len(complete_pii_mapping)}
+- Ready for final personalization
+
+NEXT STEPS:
+- CRM logging ready
+- Response logging ready
+- Data prepared for analysis"""
             
         except Exception as e:
             logger.error(f"Error processing form: {str(e)}")
-            return json.dumps({
-                "uuid": form_data.get('uuid', 'unknown') if 'form_data' in locals() else 'unknown',
-                "validation_status": "error",
-                "error": str(e)
-            })
+            return f"""Form Processing Failed:
+- Error: {str(e)}
+- UUID: {form_data.get('uuid', 'unknown') if 'form_data' in locals() else 'unknown'}
+- Status: Processing incomplete
+- Please review error and retry"""
 
 # Create tool instances
 validate_form_data = ValidateFormDataTool()

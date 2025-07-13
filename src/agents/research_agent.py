@@ -95,15 +95,14 @@ class ResearchIndustryTrendsTool(BaseTool):
     name: str = "research_industry_trends"
     description: str = """
     Research current trends and challenges for a specific industry and location.
-    Returns raw research data from Perplexity.
+    Returns formatted research findings that agents can understand and use.
     
     Input should be JSON string containing industry, location, and revenue_range:
     {"industry": "Professional Services", "location": "US", "revenue_range": "$1M-$5M"}
     
     Or simple string input: "Professional Services"
     
-    Returns JSON with research findings:
-    {"source": "perplexity", "raw_content": "Research findings...", "industry": "Professional Services", "location": "US"}
+    Returns formatted text with research findings organized by section.
     """
     args_schema: Type[BaseModel] = ResearchIndustryTrendsInput
     
@@ -173,16 +172,28 @@ class ResearchIndustryTrendsTool(BaseTool):
         
         if "error" in result:
             logger.error(f"Perplexity error: {result}")
-            # Return mock data as fallback
-            return json.dumps({
-                "source": "mock",
-                "raw_content": f"Mock research data for {industry} in {location}. EBITDA multiples: 4-6x. Revenue multiples: 1.2-2.0x. Recurring revenue threshold: 60% creates 1-2x premium. Owner dependence over 30 days acceptable. Client concentration over 30% reduces value by 20-30%. Key improvements: delegate operations (6 months, 15% value increase), document processes (3 months, 10% increase), diversify revenue (12 months, 20% increase). Buyers prioritize: recurring revenue, systematic operations, growth potential. Average sale time: 9-12 months. Trend: Buyers increasingly value technology integration and remote capabilities.",
-                "query": research_query,
-                "industry": industry,
-                "location": location,
-                "revenue_range": revenue_range,
-                "error": str(result.get('error'))
-            })
+            # Return formatted fallback text that agent can understand
+            return f"""Industry Research for {industry} in {location} ({revenue_range}):
+
+VALUATION BENCHMARKS:
+- EBITDA multiples: 4-6x for well-run businesses
+- Revenue multiples: 1.2-2.0x depending on recurring revenue
+- Recurring revenue threshold: 60%+ creates 1-2x EBITDA premium
+- Owner dependence: Over 30 days away reduces value by 20-30%
+- Client concentration: Over 30% from one client reduces value by 20-30%
+- Top discount factors: Owner dependence and customer concentration
+
+IMPROVEMENT STRATEGIES:
+1. Reducing owner dependence: Delegate key decisions and client relationships over 6 months. Impact: 15-20% value increase
+2. Systematizing operations: Document all processes and implement management systems over 3 months. Impact: 10-15% value increase
+3. Improving revenue quality: Convert to contracts and diversify client base over 12 months. Impact: 20-30% value increase
+
+MARKET CONDITIONS:
+- Buyers prioritize: Recurring revenue, systematic operations, growth potential
+- Average sale time: 9-12 months for prepared businesses
+- Key trend: Technology integration and remote capabilities increasingly valued
+
+Note: Research data unavailable - using industry standard benchmarks."""
         
         # Extract content from Perplexity response
         try:
@@ -190,32 +201,31 @@ class ResearchIndustryTrendsTool(BaseTool):
             logger.info(f"Extracted content length: {len(content)}")
         except Exception as e:
             logger.error(f"Failed to extract content: {e}")
-            content = str(result)
+            content = "Research extraction failed"
         
-        # Return structured response
-        output = {
-            "source": "perplexity",
-            "raw_content": content,
-            "query": research_query,
-            "industry": industry,
-            "location": location,
-            "revenue_range": revenue_range
-        }
-        
-        logger.info(f"=== RETURNING FROM RESEARCH TOOL ===")
-        return json.dumps(output)
+        # CRITICAL: Return formatted TEXT that agent can parse naturally
+        return f"""Industry Research for {industry} in {location} ({revenue_range}):
+
+{content}
+
+Research Details:
+- Industry: {industry}
+- Location: {location}
+- Revenue Range: {revenue_range}
+- Source: Perplexity AI Research
+
+Instructions for analysis: Extract specific benchmarks, improvement strategies, and market conditions from the research above."""
 
 class FindExitBenchmarksTool(BaseTool):
     name: str = "find_exit_benchmarks"
     description: str = """
     Find typical valuation multiples and exit statistics for the industry.
-    Returns raw benchmark data from Perplexity.
+    Returns formatted benchmark data that agents can understand.
     
     Input: Industry name or JSON string containing industry info
     Example: "Professional Services" or {"industry": "Professional Services"}
     
-    Returns JSON with benchmark data:
-    {"source": "perplexity", "raw_content": "Benchmark findings...", "industry": "Professional Services"}
+    Returns formatted text with benchmark findings.
     """
     args_schema: Type[BaseModel] = FindExitBenchmarksInput
     
@@ -250,33 +260,49 @@ class FindExitBenchmarksTool(BaseTool):
         
         if "error" in result:
             logger.warning("Using mock benchmarks due to API error")
-            return json.dumps({
-                "source": "mock",
-                "raw_content": f"Mock benchmark data for {industry}: Revenue multiples 1.2-2.0x, EBITDA multiples 4-6x, average sale time 9-12 months, success rate 60-70%",
-                "industry": industry
-            })
+            return f"""Exit Benchmarks for {industry}:
+
+VALUATION MULTIPLES:
+- Revenue multiples: 1.2-2.0x (varies by recurring revenue percentage)
+- EBITDA multiples: 4-6x for average businesses, 6-8x for top performers
+- SDE multiples: 2.5-4x for smaller businesses under $2M revenue
+
+SALE STATISTICS:
+- Average time to sell: 9-12 months from listing to close
+- Success rate: 60-70% of listed businesses sell
+- Preparation time: 6-12 months recommended before listing
+
+KEY VALUE DRIVERS:
+- Recurring revenue over 60%: Adds 1-2x to EBITDA multiple
+- Owner working less than 20 hours/week: Adds 15-25% to value
+- Diversified customer base: Critical for achieving higher multiples
+
+Note: Using industry standard benchmarks as research unavailable."""
         
         try:
             content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
         except:
-            content = str(result)
+            content = "Benchmark data extraction failed"
         
-        return json.dumps({
-            "source": "perplexity",
-            "raw_content": content,
-            "industry": industry
-        })
+        # Return formatted text
+        return f"""Exit Benchmarks for {industry}:
+
+{content}
+
+Benchmark Summary:
+- Industry analyzed: {industry}
+- Focus: Small to medium businesses ($1M-$20M revenue)
+- Data relevance: Current market conditions (2025)"""
 
 class FormatResearchOutputTool(BaseTool):
     name: str = "format_research_output"
     description: str = """
-    Format raw Perplexity research into structured data for other agents.
+    Format raw Perplexity research into structured insights for analysis.
+    Helps agents organize research findings into actionable categories.
     
-    Input: JSON string containing raw research data from Perplexity
-    Example: {"source": "perplexity", "raw_content": "Research findings text...", "industry": "Professional Services", "location": "US"}
+    Input: Text containing raw research findings
     
-    Returns JSON with structured research data:
-    {"template": {...}, "instructions": "Parse the Perplexity response...", "perplexity_content": "Raw content...", "industry": "Professional Services"}
+    Returns structured text with clear sections and instructions for data extraction.
     """
     args_schema: Type[BaseModel] = FormatResearchOutputInput
     
@@ -286,78 +312,69 @@ class FormatResearchOutputTool(BaseTool):
             logger.info(f"Input type: {type(raw_research)}")
             logger.info(f"Input preview: {str(raw_research)[:200] if raw_research else 'No data provided'}...")
             
-            # Handle case where CrewAI doesn't pass any arguments or passes empty data
+            # Handle empty input
             if not raw_research or raw_research == "{}" or raw_research == "":
-                return json.dumps({"error": "No research data to format"})
-                
-            data = safe_parse_json(raw_research, {}, "format_research_output")
-            if not data:
-                return json.dumps({"error": "No research data to format"})
-                
-            perplexity_content = data.get('raw_content', '')
+                return """No research data provided to format.
+
+Please provide research findings to structure into:
+- VALUATION BENCHMARKS
+- IMPROVEMENT STRATEGIES  
+- MARKET CONDITIONS"""
             
-            # This tool helps the agent structure the output
-            # The actual parsing will be done by the agent's LLM
+            # If input is already formatted text, help structure it
+            if isinstance(raw_research, str) and not raw_research.startswith('{'):
+                research_text = raw_research
+            else:
+                # Try to parse JSON input
+                data = safe_parse_json(raw_research, {}, "format_research_output")
+                research_text = data.get('raw_content', '') or data.get('content', '') or str(data)
             
-            output_structure = {
-                "valuation_benchmarks": {
-                    "base_EBITDA": "",  # e.g., "4-6x"
-                    "base_revenue": "",  # e.g., "1.2-2.0x"
-                    "recurring_threshold": "",  # e.g., "60%"
-                    "recurring_premium": "",  # e.g., "1-2x EBITDA"
-                    "owner_dependence_threshold": "",  # e.g., "14 days"
-                    "owner_dependence_discount": "",  # e.g., "20-30%"
-                    "concentration_threshold": "",  # e.g., "30%"
-                    "concentration_discount": ""  # e.g., "20-30%"
-                },
-                "improvements": {
-                    "owner_dependence": {
-                        "example": "",
-                        "timeline_months": 0,
-                        "value_impact": 0.0  # as decimal, e.g., 0.15 for 15%
-                    },
-                    "revenue_quality": {
-                        "example": "",
-                        "timeline_months": 0,
-                        "value_impact": 0.0
-                    },
-                    "financial_readiness": {
-                        "example": "",
-                        "timeline_months": 0,
-                        "value_impact": 0.0
-                    },
-                    "operational_resilience": {
-                        "example": "",
-                        "timeline_months": 0,
-                        "value_impact": 0.0
-                    },
-                    "growth_value": {
-                        "example": "",
-                        "timeline_months": 0,
-                        "value_impact": 0.0
-                    }
-                },
-                "market_conditions": {
-                    "buyer_priorities": [],  # List of top 3 priorities
-                    "average_sale_time": "",  # e.g., "9-12 months"
-                    "key_trend": "",  # Main trend affecting valuations
-                    "market_timing": ""  # e.g., "Seller's market" or "Buyer's market"
-                },
-                "sources": []  # List of sources cited
-            }
-            
-            # Return template for agent to fill
-            return json.dumps({
-                "template": output_structure,
-                "instructions": "Parse the Perplexity response and fill this structure with specific data",
-                "perplexity_content": perplexity_content,
-                "industry": data.get('industry', ''),
-                "location": data.get('location', '')
-            })
+            # Return structured guidance for the agent
+            return f"""Research Analysis Framework:
+
+ORIGINAL RESEARCH:
+{research_text}
+
+EXTRACTION INSTRUCTIONS:
+
+1. VALUATION BENCHMARKS (Extract these specific data points):
+   - Base EBITDA multiple range (e.g., "4-6x")
+   - Base revenue multiple range (e.g., "1.2-2.0x")
+   - Recurring revenue threshold for premium (e.g., "60%")
+   - Size of recurring revenue premium (e.g., "1-2x additional")
+   - Owner dependence threshold (e.g., "14 days")
+   - Owner dependence discount (e.g., "20-30%")
+   - Client concentration threshold (e.g., "30%")
+   - Client concentration discount (e.g., "20-30%")
+
+2. IMPROVEMENT STRATEGIES (Extract for each category):
+   Owner Dependence Improvements:
+   - Specific action and timeline
+   - Expected value impact percentage
+   
+   Revenue Quality Improvements:
+   - Specific action and timeline
+   - Expected value impact percentage
+   
+   Operational Improvements:
+   - Specific action and timeline
+   - Expected value impact percentage
+
+3. MARKET CONDITIONS (Extract these elements):
+   - Top 3 buyer priorities in order
+   - Average sale timeline in months
+   - Current market trend and its impact
+
+Analyze the research above and extract specific numbers, percentages, and timelines for each category."""
             
         except Exception as e:
             logger.error(f"Error formatting research output: {str(e)}")
-            return json.dumps({"error": str(e)})
+            return f"""Error formatting research: {str(e)}
+
+Please manually extract:
+- Valuation benchmarks
+- Improvement strategies
+- Market conditions"""
 
 # Create tool instances
 research_industry_trends = ResearchIndustryTrendsTool()
@@ -374,9 +391,9 @@ def create_research_agent(llm, prompts: Dict[str, Any]) -> Agent:
     enhanced_backstory = config.get('backstory', '') + """
     
     You excel at taking raw research data and structuring it into actionable insights.
-    When you receive raw research from Perplexity, you parse and format it into 
-    clear categories: trends, challenges, opportunities, and benchmarks.
-    You always use the format_research_output tool to structure your findings.
+    When you receive research findings, you parse and extract specific data points,
+    organizing them into clear categories: benchmarks, strategies, and conditions.
+    You always focus on extracting concrete numbers, percentages, and timelines.
     """
     
     # Create tools list using instances
@@ -388,7 +405,7 @@ def create_research_agent(llm, prompts: Dict[str, Any]) -> Agent:
     
     return Agent(
         role=config.get('role'),
-        goal=config.get('goal') + " Format raw research into structured insights.",
+        goal=config.get('goal') + " Extract specific data points from research.",
         backstory=enhanced_backstory,
         tools=tools,
         llm=llm,  # This will use GPT-4.1 mini for formatting

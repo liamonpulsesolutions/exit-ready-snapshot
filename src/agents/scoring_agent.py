@@ -1,318 +1,88 @@
 from crewai import Agent
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
-from typing import Dict, Any, List, Tuple, Type
+from typing import Dict, Any, List, Optional, Type
 import logging
-from ..utils.json_helper import safe_parse_json
 import json
-import re
+from ..utils.json_helper import safe_parse_json
 
 logger = logging.getLogger(__name__)
 
-# Constants for scoring
-MIN_ANSWER_LENGTH = 20
-DEFAULT_SCORES = {
-    "owner_dependence": 5.0,
-    "revenue_quality": 5.0,
-    "financial_readiness": 5.0,
-    "operational_resilience": 5.0,
-    "growth_value": 5.0
-}
+# Tool Input Schemas
+class CalculateCategoryScoreInput(BaseModel):
+    score_data: str = Field(
+        default="{}",
+        description="JSON string containing category name and assessment responses"
+    )
 
-# Helper functions (unchanged)
-def safe_pattern_match(text: str, pattern: str) -> bool:
-    """Safely match pattern in text"""
-    if not text or len(text) < 10:
-        return False
-    try:
-        return bool(re.search(pattern, text, re.I))
-    except:
-        return False
+class AggregateFinalScoresInput(BaseModel):
+    all_scores: str = Field(
+        default="{}",
+        description="JSON string containing all category scores"
+    )
 
-def extract_percentages(text: str) -> List[int]:
-    """Safely extract percentages from text"""
-    if not text:
-        return []
-    try:
-        percentages = re.findall(r'(\d+)%', text)
-        return [int(p) for p in percentages if 0 <= int(p) <= 100]
-    except:
-        return []
+class CalculateFocusAreasInput(BaseModel):
+    score_results: str = Field(
+        default="{}",
+        description="JSON string containing scores and business context"
+    )
 
-def analyze_pronoun_usage(text: str) -> Dict[str, Any]:
-    """Analyze I/me vs we/our language"""
-    if not text or len(text) < MIN_ANSWER_LENGTH:
-        return {"ratio": 1.0, "pattern": "neutral"}
-    
-    first_person = len(re.findall(r'\b(I|me|my|myself)\b', text, re.I))
-    team_language = len(re.findall(r'\b(we|our|team|us)\b', text, re.I))
-    
-    if team_language > 0:
-        ratio = first_person / (team_language + 1)
+# Helper functions for scoring calculations
+def calculate_time_impact(years_in_business: int) -> float:
+    """Calculate score adjustment based on years in business"""
+    if years_in_business >= 10:
+        return 1.0  # Mature business bonus
+    elif years_in_business >= 5:
+        return 0.5
+    elif years_in_business >= 3:
+        return 0.0
     else:
-        ratio = first_person
-    
-    if ratio > 3:
-        return {"ratio": ratio, "pattern": "highly_owner_centric"}
-    elif ratio > 1.5:
-        return {"ratio": ratio, "pattern": "owner_focused"}
-    elif team_language > first_person:
-        return {"ratio": ratio, "pattern": "team_oriented"}
-    else:
-        return {"ratio": ratio, "pattern": "balanced"}
+        return -0.5  # Young business penalty
 
-# Scoring functions (unchanged - keeping all the sophisticated logic)
-def score_owner_dependence(responses: Dict[str, str], research_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Score owner dependence with sophisticated analysis"""
-    # Initialize
-    base_score = DEFAULT_SCORES['owner_dependence']
-    gaps = []
-    strengths = []
-    adjustments = []
-    
-    # Q2 - Days without owner (40% weight)
-    q2_response = responses.get("q2", "").strip()
-    if q2_response:
-        if "Less than 3 days" in q2_response:
-            base_score = 2.0
-        elif "3-7 days" in q2_response:
-            base_score = 4.0
-        elif "1-2 weeks" in q2_response:
-            base_score = 6.0
-        elif "2-4 weeks" in q2_response:
-            base_score = 7.5
-        elif "More than a month" in q2_response:
-            base_score = 9.0
-        
-        # Industry comparison
-        industry_threshold = research_data.get("owner_dependence_threshold", "14 days")
-        if base_score < 6:
-            gaps.append(f"Below industry standard of {industry_threshold} operation without owner")
-    
-    # Q1 - Critical tasks analysis (40% weight)
-    q1_response = responses.get("q1", "").strip()
-    if len(q1_response) > MIN_ANSWER_LENGTH:
-        critical_tasks = q1_response.lower()
-        
-        # Pronoun analysis
-        pronoun_analysis = analyze_pronoun_usage(critical_tasks)
-        if pronoun_analysis["pattern"] == "highly_owner_centric":
-            base_score -= 1.5
-            adjustments.append("-1.5: Heavy 'I/me' language indicates owner-centric mindset")
-            gaps.append("Owner-centric language throughout")
-        elif pronoun_analysis["pattern"] == "team_oriented":
-            base_score += 0.5
-            adjustments.append("+0.5: Team-oriented language")
-            strengths.append("Uses team-oriented language")
-        
-        # Control language patterns
-        control_phrases = [
-            (r"all\s+", "handles all aspects", -1.0),
-            (r"every\s+", "controls every decision", -0.8),
-            (r"only\s+I\s+", "only owner can perform", -1.0),
-            (r"personally\s+", "requires personal involvement", -0.7),
-            (r"have\s+to\s+check", "approval bottleneck", -0.8),
-            (r"final\s+approval", "approval dependency", -0.6),
-            (r"nobody\s+else", "no delegation", -1.0),
-            (r"don't\s+trust", "trust issues with delegation", -1.2)
-        ]
-        
-        for pattern, description, penalty in control_phrases:
-            if safe_pattern_match(critical_tasks, pattern):
-                base_score += penalty
-                adjustments.append(f"{penalty}: {description}")
-                gaps.append(description.capitalize())
-        
-        # Positive indicators
-        if safe_pattern_match(critical_tasks, r"team|delegate|manager|supervisor"):
-            base_score += 0.5
-            adjustments.append("+0.5: Shows delegation awareness")
-            strengths.append("Some delegation structure exists")
-        
-        # Client relationship dependency
-        if "client" in critical_tasks and any(word in critical_tasks for word in ["meeting", "relationship", "expect"]):
-            base_score -= 1.0
-            adjustments.append("-1.0: Client relationships tied to owner")
-            gaps.append("Client relationships dependent on owner")
-    
-    # Q7 - Key person risk compounds owner risk (20% weight)
-    q7_response = responses.get("q7", "").strip()
-    if len(q7_response) > MIN_ANSWER_LENGTH:
-        key_employee = q7_response.lower()
-        
-        # Check for succession potential
-        role_overlap_terms = [
-            ("certif", "certif"),
-            ("client", "relationship"),
-            ("approv", "senior"),
-            ("pric", "financ"),
-            ("quality", "quality"),
-            ("technical", "technical")
-        ]
-        
-        succession_potential = 0
-        if q1_response and q7_response:
-            for task_term, employee_term in role_overlap_terms:
-                if task_term in critical_tasks and employee_term in key_employee:
-                    succession_potential += 1
-            
-            if succession_potential > 0:
-                base_score += 0.5
-                adjustments.append("+0.5: Key employee could potentially take over some owner tasks")
-                strengths.append("Potential succession candidate identified")
-            elif len(q7_response) > 50:
-                gaps.append("Key employees' skills don't overlap with owner's critical tasks")
-        
-        # Long tenure risk
-        if any(year in key_employee for year in ["10 year", "15 year", "20 year"]):
-            base_score -= 0.3
-            adjustments.append("-0.3: Long-tenured key person adds to dependency risk")
-            gaps.append("Long-tenured key person dependency")
-    
-    # Ensure score stays in bounds
-    final_score = max(1.0, min(10.0, base_score))
-    
-    # Get industry context
-    expected_discount = research_data.get("owner_dependence_discount", "15-25%")
-    if final_score < 4:
-        impact = f"Expected {expected_discount} valuation discount"
-    else:
-        impact = "Acceptable to most buyers"
-    
-    return {
-        "score": round(final_score, 1),
-        "weight": 0.25,
-        "scoring_breakdown": {
-            "base_score": DEFAULT_SCORES['owner_dependence'],
-            "adjustments": adjustments,
-            "final_score": round(final_score, 1)
-        },
-        "strengths": strengths if strengths else ["Unable to identify specific strengths from provided data"],
-        "gaps": gaps if gaps else ["Limited data for detailed analysis"],
-        "industry_context": {
-            "benchmark": research_data.get("owner_dependence_threshold", "14+ days operation"),
-            "current_position": q2_response if q2_response else "Not specified",
-            "impact": impact
-        }
+def calculate_revenue_impact(revenue_range: str) -> float:
+    """Calculate score adjustment based on revenue"""
+    revenue_impacts = {
+        "Under $500K": -1.0,
+        "$500K-$1M": -0.5,
+        "$1M-$5M": 0.0,
+        "$5M-$10M": 0.5,
+        "$10M-$25M": 1.0,
+        "$25M-$50M": 1.5,
+        "Over $50M": 2.0
     }
+    return revenue_impacts.get(revenue_range, 0.0)
 
-def score_revenue_quality(responses: Dict[str, str], research_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Score revenue quality with concentration and recurring analysis"""
-    # Initialize
-    base_score = DEFAULT_SCORES['revenue_quality']
-    gaps = []
-    strengths = []
-    adjustments = []
+def calculate_growth_trajectory(revenue_trend: str, profit_trend: str) -> float:
+    """Calculate growth trajectory score"""
+    growth_score = 0.0
     
-    # Q4 - Recurring revenue percentage (50% weight)
-    q4_response = responses.get("q4", "").strip()
-    if q4_response:
-        if "0-20%" in q4_response:
-            base_score = 2.0
-        elif "20-40%" in q4_response:
-            base_score = 4.0
-        elif "40-60%" in q4_response:
-            base_score = 6.0
-        elif "60-80%" in q4_response:
-            base_score = 7.5
-        elif "Over 80%" in q4_response:
-            base_score = 9.0
-        elif "Unsure" in q4_response:
-            base_score = 3.0
-            gaps.append("Recurring revenue not tracked")
-        
-        # Check against industry threshold
-        recurring_threshold = research_data.get("recurring_revenue_threshold", "60%")
-        if "60-80%" in q4_response or "Over 80%" in q4_response:
-            strengths.append(f"Exceeds industry threshold of {recurring_threshold} recurring")
+    # Revenue trend impact
+    if "significantly" in revenue_trend and "increased" in revenue_trend:
+        growth_score += 2.0
+    elif "increased" in revenue_trend:
+        growth_score += 1.0
+    elif "stayed flat" in revenue_trend:
+        growth_score += 0.0
+    else:
+        growth_score -= 1.0
     
-    # Q3 - Revenue mix analysis (50% weight)
-    q3_response = responses.get("q3", "").strip()
-    if len(q3_response) > MIN_ANSWER_LENGTH:
-        revenue_mix = q3_response.lower()
-        
-        # Extract percentages
-        percentages = extract_percentages(q3_response)
-        if percentages:
-            largest_concentration = max(percentages)
-            
-            # Concentration risk
-            concentration_threshold = int(research_data.get("concentration_threshold", "30").replace("%", ""))
-            if largest_concentration > concentration_threshold:
-                penalty = (largest_concentration - concentration_threshold) * 0.05
-                base_score -= penalty
-                adjustments.append(f"-{penalty:.1f}: {largest_concentration}% concentration exceeds {concentration_threshold}% threshold")
-                gaps.append(f"{largest_concentration}% revenue concentration (high risk)")
-            
-            # Diversification bonus
-            if len(percentages) >= 4:
-                base_score += 0.5
-                adjustments.append("+0.5: Well-diversified revenue streams")
-                strengths.append(f"Diversified across {len(percentages)} revenue sources")
-            elif len(percentages) == 1:
-                base_score -= 1.0
-                adjustments.append("-1.0: Single revenue source")
-                gaps.append("No revenue diversification")
-        
-        # Contract analysis
-        contract_indicators = [
-            (r"(\d+)[-\s]year\s+(?:contract|agreement)", "multi-year contracts", 0.8),
-            (r"retainer", "retainer-based revenue", 0.5),
-            (r"subscription", "subscription model", 0.7),
-            (r"automatic\s+renewal", "auto-renewal contracts", 0.6),
-            (r"month[-\s]to[-\s]month", "unstable month-to-month", -0.5)
-        ]
-        
-        for pattern, description, impact in contract_indicators:
-            if safe_pattern_match(revenue_mix, pattern):
-                base_score += impact
-                adjustments.append(f"{impact:+.1f}: {description}")
-                if impact > 0:
-                    strengths.append(description.capitalize())
-                else:
-                    gaps.append(description.capitalize())
-        
-        # Client relationship analysis
-        if safe_pattern_match(revenue_mix, r"personal|prefer|relationship"):
-            base_score -= 0.5
-            adjustments.append("-0.5: Personal relationship dependency indicated")
-            gaps.append("Revenue tied to personal relationships")
-        
-        # Sector concentration
-        sectors = re.findall(r'(automotive|aerospace|defense|government|healthcare|retail|financial)', revenue_mix, re.I)
-        if sectors and len(set(sectors)) == 1:
-            base_score -= 0.5
-            adjustments.append(f"-0.5: Single sector concentration ({sectors[0]})")
-            gaps.append(f"Industry concentration risk: {sectors[0]}")
+    # Profit trend impact
+    if "improved significantly" in profit_trend:
+        growth_score += 1.5
+    elif "improved" in profit_trend:
+        growth_score += 0.5
+    elif "stayed flat" in profit_trend:
+        growth_score += 0.0
+    else:
+        growth_score -= 0.5
     
-    # Ensure score stays in bounds
-    final_score = max(1.0, min(10.0, base_score))
-    
-    # Industry context
-    recurring_premium = research_data.get("recurring_revenue_premium", "15-25%")
-    concentration_discount = research_data.get("concentration_discount", "20-30%")
-    
-    return {
-        "score": round(final_score, 1),
-        "weight": 0.25,
-        "scoring_breakdown": {
-            "base_score": DEFAULT_SCORES['revenue_quality'],
-            "adjustments": adjustments,
-            "final_score": round(final_score, 1)
-        },
-        "strengths": strengths if strengths else ["Unable to identify specific strengths"],
-        "gaps": gaps if gaps else ["Limited data for analysis"],
-        "industry_context": {
-            "recurring_threshold": research_data.get("recurring_revenue_threshold", "60%"),
-            "concentration_threshold": research_data.get("concentration_threshold", "30%"),
-            "impact": f"Premium: {recurring_premium} | Risk: {concentration_discount} discount"
-        }
-    }
+    return growth_score
 
-def score_financial_readiness(responses: Dict[str, str], research_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Score financial readiness and profitability trends"""
+# Scoring functions for each category
+def score_financial_performance(responses: Dict[str, str], research_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Score financial performance category with sophisticated analysis"""
     # Initialize
-    base_score = 0.0
+    base_score = 5.0
     gaps = []
     strengths = []
     adjustments = []
@@ -321,32 +91,41 @@ def score_financial_readiness(responses: Dict[str, str], research_data: Dict[str
     q5_response = responses.get("q5", "").strip()
     if q5_response:
         try:
-            financial_confidence = float(q5_response)
-            base_score = financial_confidence * 0.6
+            # Handle both numeric and text responses
+            if q5_response.isdigit():
+                confidence = int(q5_response)
+            else:
+                # Extract number from text like "7 - Strong confidence"
+                import re
+                match = re.search(r'(\d+)', q5_response)
+                confidence = int(match.group(1)) if match else 5
             
-            if financial_confidence >= 8:
-                strengths.append("High confidence in financial records")
-            elif financial_confidence >= 6:
-                strengths.append("Reasonable financial documentation")
-            elif financial_confidence <= 4:
-                gaps.append("Low confidence in financial records")
-                gaps.append("Due diligence likely to uncover issues")
-            
-            # Cross-check with documentation score if available
-            q8_response = responses.get("q8", "")
-            if q8_response:
-                try:
-                    doc_score = float(q8_response)
-                    if financial_confidence >= 8 and doc_score <= 4:
-                        base_score *= 0.9
-                        adjustments.append("-10%: High confidence despite poor documentation")
-                        gaps.append("Potential overconfidence in financials")
-                    elif financial_confidence <= 4 and doc_score >= 7:
-                        base_score *= 1.1
-                        adjustments.append("+10%: Conservative assessment despite good documentation")
-                        strengths.append("Conservative financial self-assessment")
-                except:
-                    pass
+            # Sophisticated confidence mapping
+            if confidence >= 9:
+                base_score = 4.5
+                strengths.append("Exceptional financial confidence indicates strong systems")
+                adjustments.append("+4.5: Very high financial confidence")
+            elif confidence >= 7:
+                base_score = 3.5
+                strengths.append("Strong financial confidence")
+                adjustments.append("+3.5: Good financial confidence")
+            elif confidence >= 5:
+                base_score = 2.5
+                adjustments.append("+2.5: Moderate financial confidence")
+            else:
+                base_score = 1.5
+                gaps.append("Low financial confidence suggests poor visibility")
+                adjustments.append("+1.5: Low financial confidence")
+                
+                # Additional context for very low scores
+                if confidence <= 2:
+                    gaps.append("Critical: Buyers will see this as high risk")
+                    try:
+                        # Safe parsing of potential additional context
+                        if "don't track" in q5_response.lower() or "no system" in q5_response.lower():
+                            gaps.append("No financial tracking system - major red flag for assessment")
+                    except:
+                        pass
         except:
             base_score = 3.0  # Default if parsing fails
     else:
@@ -400,113 +179,128 @@ def score_financial_readiness(responses: Dict[str, str], research_data: Dict[str
         "strengths": strengths if strengths else ["Unable to identify specific strengths"],
         "gaps": gaps if gaps else ["Limited financial data provided"],
         "industry_context": {
-            "benchmark": "Buyers expect 3+ years clean financials",
-            "margin_expectations": research_data.get("margin_expectations", "Stable or improving"),
-            "impact": "Financial clarity critical for valuation confidence"
+            "benchmark": "Industry expects 15-20% EBITDA margins",
+            "impact": "Strong financials can add 20-30% to valuation"
         }
     }
 
-def score_operational_resilience(responses: Dict[str, str], research_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Score operational resilience and systematization"""
-    # Initialize
-    base_score = 0.0
+def score_revenue_stability(responses: Dict[str, str], research_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Score revenue quality and predictability"""
+    base_score = 5.0
     gaps = []
     strengths = []
     adjustments = []
     
-    # Q8 - Documentation score (60% weight)
+    # Extract business fundamentals
+    revenue_range = responses.get("revenue_range", "$1M-$5M")
+    years_in_business = int(responses.get("years_in_business", "5"))
+    
+    # Time in business impact
+    time_impact = calculate_time_impact(years_in_business)
+    base_score += time_impact
+    if time_impact > 0:
+        strengths.append(f"Established {years_in_business}+ year track record")
+        adjustments.append(f"+{time_impact}: Mature business bonus")
+    elif time_impact < 0:
+        gaps.append("Limited operating history increases risk")
+        adjustments.append(f"{time_impact}: Young business adjustment")
+    
+    # Revenue size impact
+    revenue_impact = calculate_revenue_impact(revenue_range)
+    base_score += revenue_impact
+    if revenue_impact > 0:
+        strengths.append(f"Strong revenue scale ({revenue_range})")
+        adjustments.append(f"+{revenue_impact}: Revenue scale bonus")
+    elif revenue_impact < 0:
+        gaps.append("Small revenue base limits buyer pool")
+        adjustments.append(f"{revenue_impact}: Limited revenue adjustment")
+    
+    # Industry-specific adjustments
+    industry = responses.get("industry", "").lower()
+    if "recurring" in industry or "saas" in industry or "subscription" in industry:
+        base_score += 1.0
+        strengths.append("Recurring revenue model highly valued")
+        adjustments.append("+1.0: Recurring revenue bonus")
+    elif "consulting" in industry or "project" in industry:
+        base_score -= 0.5
+        gaps.append("Project-based revenue less predictable")
+        adjustments.append("-0.5: Project revenue adjustment")
+    
+    final_score = max(1.0, min(10.0, base_score))
+    
+    return {
+        "score": round(final_score, 1),
+        "weight": 0.20,
+        "scoring_breakdown": {
+            "base_score": 5.0,
+            "adjustments": adjustments,
+            "final_score": round(final_score, 1)
+        },
+        "strengths": strengths if strengths else ["Stable revenue base"],
+        "gaps": gaps if gaps else ["No critical revenue issues identified"],
+        "industry_context": {
+            "benchmark": f"Typical {industry} multiples: 2-4x revenue",
+            "impact": "Predictable revenue can increase multiples by 50%"
+        }
+    }
+
+def score_operations_efficiency(responses: Dict[str, str], research_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Score operational maturity and scalability"""
+    base_score = 5.0
+    gaps = []
+    strengths = []
+    adjustments = []
+    
+    # Q7 - Team dependency (50% weight)
+    q7_response = responses.get("q7", "").strip()
+    if q7_response:
+        if "Everything would stop" in q7_response or "Major disruption" in q7_response:
+            base_score = 2.0
+            gaps.append("Critical owner dependency - major exit barrier")
+            adjustments.append("-3.0: High owner dependency")
+        elif "Some disruption" in q7_response:
+            base_score = 5.0
+            gaps.append("Moderate owner dependency needs addressing")
+            adjustments.append("0.0: Moderate dependency")
+        elif "Minimal disruption" in q7_response:
+            base_score = 7.0
+            strengths.append("Good operational independence")
+            adjustments.append("+2.0: Low dependency")
+        elif "No disruption" in q7_response:
+            base_score = 9.0
+            strengths.append("Excellent operational independence - highly attractive")
+            adjustments.append("+4.0: No owner dependency")
+    
+    # Q8 - Documentation (30% weight)
     q8_response = responses.get("q8", "").strip()
     if q8_response:
-        try:
-            documentation_score = float(q8_response)
-            base_score = documentation_score * 0.6
-            
-            if documentation_score >= 8:
-                strengths.append("Excellent process documentation")
-                # Check for ISO mention in Q9
-                q9_response = responses.get("q9", "")
-                if q9_response and "iso" in q9_response.lower():
-                    base_score += 0.5
-                    adjustments.append("+0.5: ISO certification validates documentation")
-                    strengths.append("ISO certification supports systematic operations")
-            elif documentation_score >= 6:
-                strengths.append("Good process documentation")
-            elif documentation_score <= 3:
-                gaps.append("Minimal process documentation")
-                gaps.append("Knowledge transfer risk high")
-        except:
-            base_score = 3.0
+        doc_score = 0.0
+        if "Comprehensive" in q8_response:
+            doc_score = 2.0
+            strengths.append("Excellent process documentation")
+            adjustments.append("+2.0: Comprehensive documentation")
+        elif "Good documentation" in q8_response:
+            doc_score = 1.0
+            strengths.append("Solid documentation foundation")
+            adjustments.append("+1.0: Good documentation")
+        elif "Some documentation" in q8_response:
+            doc_score = 0.0
+            gaps.append("Documentation needs improvement")
+        elif "Little" in q8_response or "No documentation" in q8_response:
+            doc_score = -2.0
+            gaps.append("Poor documentation - significant weakness")
+            adjustments.append("-2.0: Poor documentation")
+        
+        base_score += doc_score
+    
+    # Management structure bonus (20% weight)
+    if "management team" in responses.get("q7", "").lower():
+        base_score += 1.0
+        strengths.append("Management team in place")
+        adjustments.append("+1.0: Management structure bonus")
     else:
-        base_score = 3.0
-        gaps.append("No documentation score provided")
+        gaps.append("No clear management structure")
     
-    # Q7 - Key person dependencies (40% weight)
-    q7_response = responses.get("q7", "").strip()
-    if len(q7_response) > MIN_ANSWER_LENGTH:
-        key_employee = q7_response.lower()
-        
-        # Analyze dependency depth
-        critical_indicators = [
-            (r"only\s+(?:person|one|employee)", "single person dependency", -1.0),
-            (r"(\d+)\s+years?\s+(?:experience|knowledge)", "deep experience dependency", -0.5),
-            (r"relationship", "relationship dependency", -0.7),
-            (r"would\s+be\s+(?:impossible|very\s+difficult)", "critical dependency", -1.0),
-            (r"certifi", "certification dependency", -0.6),
-            (r"no\s+one\s+else", "no backup identified", -0.8)
-        ]
-        
-        dependency_score = 0
-        for pattern, description, impact in critical_indicators:
-            if safe_pattern_match(key_employee, pattern):
-                dependency_score += impact
-                adjustments.append(f"{impact}: {description}")
-                gaps.append(description.capitalize())
-        
-        # Positive indicators
-        if safe_pattern_match(key_employee, r"team|backup|cross-train|document"):
-            dependency_score += 0.5
-            adjustments.append("+0.5: Mitigation efforts mentioned")
-            strengths.append("Some redundancy or training mentioned")
-        
-        # Apply dependency score
-        if dependency_score < -2:
-            base_score += 0.5
-            gaps.append("Multiple critical dependencies on key employee")
-        elif dependency_score < -1:
-            base_score += 2.0
-            gaps.append("Significant key person risk")
-        else:
-            base_score += 3.5
-            if dependency_score > 0:
-                strengths.append("Limited key person dependencies")
-    else:
-        base_score += 2.0  # Neutral if no data
-    
-    # Business maturity indicators
-    all_responses = " ".join(responses.values()).lower()
-    maturity_score = 0
-    
-    positive_indicators = ["dashboard", "kpi", "metrics", "automated", "system", "process", "procedure"]
-    negative_indicators = ["figure it out", "always done", "my way", "just know"]
-    
-    for indicator in positive_indicators:
-        if indicator in all_responses:
-            maturity_score += 0.2
-    
-    for indicator in negative_indicators:
-        if indicator in all_responses:
-            maturity_score -= 0.3
-    
-    if maturity_score > 0.5:
-        base_score += 0.5
-        adjustments.append("+0.5: Mature business language indicates systematization")
-        strengths.append("Professional systems terminology used")
-    elif maturity_score < -0.5:
-        base_score -= 0.5
-        adjustments.append("-0.5: Informal language suggests ad-hoc operations")
-        gaps.append("Informal operational approach")
-    
-    # Ensure score stays in bounds
     final_score = max(1.0, min(10.0, base_score))
     
     return {
@@ -517,7 +311,7 @@ def score_operational_resilience(responses: Dict[str, str], research_data: Dict[
             "adjustments": adjustments,
             "final_score": round(final_score, 1)
         },
-        "strengths": strengths if strengths else ["Unable to identify specific strengths"],
+        "strengths": strengths if strengths else ["Basic operational structure in place"],
         "gaps": gaps if gaps else ["Limited operational data provided"],
         "industry_context": {
             "benchmark": "Buyers expect documented processes and backup for key roles",
@@ -551,591 +345,661 @@ def score_growth_value(responses: Dict[str, str], research_data: Dict[str, Any])
         base_score += 1.5
     
     # Q9 - Value drivers analysis (70% weight!)
-    q9_response = responses.get("q9", "").strip()
-    if len(q9_response) > MIN_ANSWER_LENGTH:
-        value_description = q9_response.lower()
+    q9_response = responses.get("q9", "").strip().lower()
+    if q9_response:
+        value_score = 0.0
+        value_drivers = []
         
-        # High-value indicators with scoring
-        value_indicators = {
-            # Intellectual property and exclusivity
-            "proprietary": (1.0, "Proprietary assets/methods"),
-            "patent": (1.2, "Patent protection"),
-            "exclusive": (0.8, "Exclusive arrangements"),
-            "trademark": (0.6, "Trademark protection"),
-            
-            # Certifications and barriers
-            "certification": (0.7, "Industry certifications"),
-            "iso": (0.7, "ISO certification"),
-            "license": (0.6, "Required licenses"),
-            "accredit": (0.7, "Accreditation"),
-            
-            # Competitive advantages
-            "only": (0.6, "Unique position"),
-            "unique": (0.5, "Unique offering"),
-            "competitive advantage": (1.0, "Clear competitive advantage"),
-            "barrier": (0.8, "Entry barriers"),
-            "moat": (1.0, "Competitive moat"),
-            
-            # Relationships and contracts
-            "long-term": (0.6, "Long-term arrangements"),
-            "contract": (0.5, "Contracted advantages"),
-            "partnership": (0.6, "Strategic partnerships"),
-            "preferred": (0.7, "Preferred status"),
-            
-            # Specialization
-            "specialized": (0.7, "Specialized capability"),
-            "rare": (0.8, "Rare expertise/equipment"),
-            "custom": (0.5, "Customized solutions"),
-            "niche": (0.6, "Niche market position")
-        }
+        # Check for strong value indicators
+        strong_indicators = [
+            ("proprietary", 2.0, "Proprietary technology/IP"),
+            ("patent", 2.0, "Patent protection"),
+            ("exclusive", 1.5, "Exclusive agreements"),
+            ("market leader", 1.5, "Market leadership position"),
+            ("unique", 1.0, "Unique market position"),
+            ("recurring", 1.0, "Recurring revenue model"),
+            ("contract", 0.8, "Long-term contracts"),
+            ("relationship", 0.5, "Strong customer relationships")
+        ]
         
-        value_score = 0
-        identified_advantages = []
-        
-        for indicator, (points, description) in value_indicators.items():
-            if safe_pattern_match(value_description, rf'\b{indicator}\b'):
+        for indicator, points, description in strong_indicators:
+            if indicator in q9_response:
                 value_score += points
-                identified_advantages.append(description)
-                adjustments.append(f"+{points}: {description}")
+                value_drivers.append(description)
+                strengths.append(description)
         
-        # Cap at 4.0 additional points but track if more
-        uncapped_score = value_score
-        value_score = min(value_score, 4.0)
-        base_score += value_score
+        # Check for weak indicators
+        if "no" in q9_response or "not really" in q9_response or "none" in q9_response:
+            value_score = -1.0
+            gaps.append("No clear competitive advantages identified")
         
-        if uncapped_score > 4.0:
-            strengths.append(f"Multiple strong value drivers ({len(identified_advantages)} identified)")
-        elif len(identified_advantages) > 0:
-            strengths.extend(identified_advantages[:3])  # Top 3
+        # Apply value driver score
+        base_score += min(4.0, value_score)  # Cap at 4.0
+        
+        if value_drivers:
+            adjustments.append(f"+{min(4.0, value_score):.1f}: {len(value_drivers)} value drivers")
         else:
-            gaps.append("No clear competitive advantages articulated")
-        
-        # Quantification bonus
-        numbers_found = re.findall(r'\$?\d+[KMkmm]?|\d+%|\d+\+?\s*year', value_description)
-        if len(numbers_found) >= 2:
-            base_score += 0.5
-            adjustments.append("+0.5: Quantified value propositions")
-            strengths.append("Value drivers are quantified")
-        elif len(identified_advantages) > 0 and len(numbers_found) == 0:
-            gaps.append("Value claims lack quantification")
-        
-        # Asset value analysis
-        asset_matches = re.findall(r'\$(\d+(?:\.\d+)?)\s*([KMkmm])?', value_description)
-        total_asset_value = 0
-        for amount, multiplier in asset_matches:
-            value = float(amount)
-            if multiplier in ['M', 'm']:
-                value *= 1000000
-            elif multiplier in ['K', 'k']:
-                value *= 1000
-            total_asset_value += value
-        
-        if total_asset_value >= 1000000:
-            base_score += 0.5
-            adjustments.append(f"+0.5: Significant tangible assets (${total_asset_value:,.0f})")
-            strengths.append(f"Valuable tangible assets: ${total_asset_value:,.0f}")
-        
-        # Geographic advantage
-        if safe_pattern_match(value_description, r'only\s+(?:one|company|provider)\s+in\s+(?:the\s+)?(?:region|area|state|city)'):
-            base_score += 0.8
-            adjustments.append("+0.8: Geographic market advantage")
-            strengths.append("Geographic monopoly/oligopoly position")
-        
-        # Competitive validation
-        if "competitor" in value_description and any(word in value_description for word in ["can't", "cannot", "unable"]):
-            base_score += 0.5
-            adjustments.append("+0.5: Competitors cannot replicate")
-            strengths.append("Difficult to replicate advantages")
-    else:
-        gaps.append("No value drivers provided for analysis")
+            adjustments.append(f"+{value_score:.1f}: Limited value differentiation")
     
-    # Cross-reference with operational strength
-    q8_score = responses.get("q8", "")
-    if q8_score:
-        try:
-            if float(q8_score) >= 7 and base_score >= 6:
-                base_score += 0.3
-                adjustments.append("+0.3: Strong operations support growth potential")
-        except:
-            pass
+    # Growth trajectory from financial trends
+    revenue_trend = responses.get("q4", "")
+    profit_trend = responses.get("q6", "")
+    trajectory_score = calculate_growth_trajectory(revenue_trend, profit_trend)
+    base_score += trajectory_score * 0.5
     
-    # Ensure score stays in bounds
+    if trajectory_score > 1:
+        strengths.append("Strong growth trajectory")
+        adjustments.append(f"+{trajectory_score * 0.5:.1f}: Growth trajectory")
+    elif trajectory_score < -0.5:
+        gaps.append("Declining performance trend")
+        adjustments.append(f"{trajectory_score * 0.5:.1f}: Negative trajectory")
+    
     final_score = max(1.0, min(10.0, base_score))
     
     return {
         "score": round(final_score, 1),
-        "weight": 0.15,
+        "weight": 0.25,
         "scoring_breakdown": {
             "base_score": 3.0,
             "adjustments": adjustments,
             "final_score": round(final_score, 1)
         },
-        "strengths": strengths if strengths else ["Unable to identify specific value drivers"],
-        "gaps": gaps if gaps else ["Limited information on unique value"],
+        "strengths": strengths if strengths else ["Some growth potential identified"],
+        "gaps": gaps if gaps else ["Value proposition needs strengthening"],
         "industry_context": {
-            "benchmark": "Buyers pay premiums for defensible competitive advantages",
-            "impact": "Strong value drivers can add 20-40% to valuation multiples"
+            "benchmark": "Premium valuations require clear competitive moats",
+            "impact": "Strong value drivers can increase multiples by 2-3x"
         }
     }
 
-# Tool Input Schemas
-class CalculateCategoryScoreInput(BaseModel):
-    category_data: str = Field(
-        default="{}",
-        description="JSON string containing category, responses, research_data, and rubric"
-    )
-
-class AggregateFinalScoresInput(BaseModel):
-    all_scores: str = Field(
-        default="{}",
-        description="JSON string containing all category scores"
-    )
-
-class CalculateFocusAreasInput(BaseModel):
-    assessment_data: str = Field(
-        default="{}",
-        description="JSON string containing category_scores, research_data, exit_timeline, and responses"
-    )
+def score_exit_readiness(responses: Dict[str, str], research_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Score structural and timeline readiness for exit"""
+    base_score = 5.0
+    gaps = []
+    strengths = []
+    adjustments = []
+    
+    # Q3 - Exit timeline (40% weight)
+    q3_response = responses.get("q3", "").strip()
+    timeline_score = 0.0
+    
+    if "Already in discussions" in q3_response:
+        timeline_score = -1.0  # Urgency may hurt negotiation
+        gaps.append("Active discussions without full preparation")
+        adjustments.append("-1.0: Rushed timeline risk")
+    elif "Within 6 months" in q3_response:
+        timeline_score = 0.0
+        gaps.append("Tight timeline limits improvement options")
+    elif "6-12 months" in q3_response:
+        timeline_score = 1.0
+        strengths.append("Reasonable preparation timeline")
+        adjustments.append("+1.0: Good preparation window")
+    elif "1-2 years" in q3_response:
+        timeline_score = 2.0
+        strengths.append("Optimal timeline for value enhancement")
+        adjustments.append("+2.0: Ideal preparation timeline")
+    elif "2-5 years" in q3_response:
+        timeline_score = 1.0
+        strengths.append("Ample time for strategic improvements")
+        adjustments.append("+1.0: Strategic timeline")
+    else:  # 5+ years or just exploring
+        timeline_score = 0.0
+        
+    base_score += timeline_score
+    
+    # Structural readiness indicators (60% weight)
+    structural_score = 0.0
+    
+    # Clean books bonus
+    if int(responses.get("q5", "5")) >= 7:
+        structural_score += 1.0
+        strengths.append("Financial confidence indicates clean books")
+        adjustments.append("+1.0: Clean financials")
+    
+    # Documentation bonus
+    if "Comprehensive" in responses.get("q8", "") or "Good documentation" in responses.get("q8", ""):
+        structural_score += 1.0
+        strengths.append("Documentation supports due diligence")
+        adjustments.append("+1.0: Good documentation")
+    
+    # Independence bonus
+    if "Minimal disruption" in responses.get("q7", "") or "No disruption" in responses.get("q7", ""):
+        structural_score += 1.5
+        strengths.append("Operational independence attractive to buyers")
+        adjustments.append("+1.5: Low dependency")
+    else:
+        gaps.append("Owner dependency complicates transition")
+    
+    # Legal structure consideration
+    years_in_business = int(responses.get("years_in_business", "5"))
+    if years_in_business >= 5:
+        structural_score += 0.5
+        adjustments.append("+0.5: Established entity")
+    
+    base_score += structural_score
+    
+    # Market timing factor
+    market_conditions = research_data.get('market_conditions', {})
+    if market_conditions.get('favorable', False):
+        base_score += 0.5
+        strengths.append("Favorable market conditions")
+    
+    final_score = max(1.0, min(10.0, base_score))
+    
+    return {
+        "score": round(final_score, 1),
+        "weight": 0.20,
+        "scoring_breakdown": {
+            "base_score": 5.0,
+            "adjustments": adjustments,
+            "final_score": round(final_score, 1)
+        },
+        "strengths": strengths if strengths else ["Basic exit readiness framework exists"],
+        "gaps": gaps if gaps else ["Some preparation areas to address"],
+        "industry_context": {
+            "benchmark": "Well-prepared businesses sell 25% faster and for 20% more",
+            "impact": "Poor preparation can reduce value by 30-50%"
+        }
+    }
 
 # Tool Classes
 class CalculateCategoryScoreTool(BaseTool):
     name: str = "calculate_category_score"
     description: str = """
-    Calculate sophisticated score for a category using multiple factors.
-    Handles both structured input and direct category scoring from agent context.
+    Calculate sophisticated score for a specific assessment category.
     
     Input should be JSON string containing:
-    {"category": "owner_dependence", "responses": {...}, "research_data": {...}, "rubric": {...}}
+    {"category": "financial_performance", "responses": {...}, "research_data": {...}}
     
-    Returns detailed scoring with strengths, gaps, and industry context.
+    Returns detailed scoring breakdown as formatted text.
     """
     args_schema: Type[BaseModel] = CalculateCategoryScoreInput
     
-    def _run(self, category_data: str = "{}", **kwargs) -> str:
+    def _run(self, score_data: str = "{}", **kwargs) -> str:
         try:
             logger.info(f"=== CALCULATE CATEGORY SCORE CALLED ===")
-            logger.info(f"Input type: {type(category_data)}")
-            logger.info(f"Input value: {str(category_data)[:300] if category_data else 'No data provided'}...")
+            logger.info(f"Input preview: {str(score_data)[:200]}...")
             
-            # Handle case where CrewAI doesn't pass any arguments or passes empty data
-            if category_data is None or (isinstance(category_data, str) and not category_data.strip()):
-                logger.warning("No category data provided - this indicates the agent isn't structuring the tool call properly")
-                
-                # Return a helpful error that shows what the agent should be doing
-                return json.dumps({
-                    "error": "AGENT INSTRUCTION: You must call this tool with structured data like: {'category': 'owner_dependence', 'responses': {...}, 'research_data': {...}}",
-                    "score": DEFAULT_SCORES.get("owner_dependence", 5.0),  # Default fallback
-                    "gaps": ["Tool called without required data structure"],
-                    "strengths": [],
-                    "debug_info": {
-                        "received_input": str(category_data),
-                        "expected_format": "JSON object with category, responses, and research_data keys"
-                    }
-                })
+            # Handle empty input
+            if not score_data or score_data == "{}":
+                return """CATEGORY SCORING: Failed ❌
+
+No scoring data provided.
+
+Required:
+- Category name
+- Assessment responses
+- Research data (optional)
+
+Action Required: Provide category and response data for scoring."""
             
-            # Try to parse the input
-            if isinstance(category_data, str):
-                try:
-                    data = json.loads(category_data)
-                except json.JSONDecodeError:
-                    # Handle raw category name (fallback)
-                    category_name = category_data.strip().lower()
-                    if category_name in DEFAULT_SCORES:
-                        return json.dumps({
-                            "error": f"Received category name '{category_name}' but need full data structure",
-                            "score": DEFAULT_SCORES[category_name],
-                            "gaps": ["Incomplete data provided to scoring tool"],
-                            "strengths": []
-                        })
-                    else:
-                        data = {}
+            # Parse input data
+            if isinstance(score_data, dict):
+                data = score_data
             else:
-                data = category_data
+                data = safe_parse_json(score_data, {}, "calculate_category_score")
+                if not data:
+                    return """CATEGORY SCORING: Failed ❌
+
+Invalid JSON format for scoring data.
+Please check the input format and retry."""
             
-            # Extract required fields
-            category = data.get('category', 'unknown')
+            category = data.get('category', '').lower()
             responses = data.get('responses', {})
             research_data = data.get('research_data', {})
-            rubric = data.get('rubric', {})
             
-            logger.info(f"Processing category: {category}")
-            logger.info(f"Available responses: {list(responses.keys()) if responses else 'None'}")
+            # Map categories to scoring functions
+            scoring_functions = {
+                'financial_performance': score_financial_performance,
+                'revenue_stability': score_revenue_stability,
+                'operations_efficiency': score_operations_efficiency,
+                'growth_value': score_growth_value,
+                'exit_readiness': score_exit_readiness
+            }
             
-            # If we still don't have the required data, provide instructions
-            if not category or category == 'unknown':
-                return json.dumps({
-                    "error": "Missing 'category' field in input data",
-                    "score": 5.0,
-                    "gaps": ["Category not specified"],
-                    "strengths": [],
-                    "agent_instruction": "Call this tool with: {'category': 'owner_dependence', 'responses': {...}, 'research_data': {...}}"
-                })
+            # Validate category
+            if category not in scoring_functions:
+                return f"""CATEGORY SCORING: Invalid Category ❌
+
+Category '{category}' not recognized.
+
+Valid categories:
+- financial_performance
+- revenue_stability
+- operations_efficiency
+- growth_value
+- exit_readiness
+
+Action Required: Use a valid category name."""
             
-            if not responses:
-                logger.warning(f"No responses provided for category {category}")
-                return json.dumps({
-                    "error": f"No responses provided for category {category}",
-                    "score": DEFAULT_SCORES.get(category, 5.0),
-                    "gaps": [f"No response data available for {category} analysis"],
-                    "strengths": []
-                })
+            # Calculate score
+            scoring_function = scoring_functions[category]
+            result = scoring_function(responses, research_data)
             
-            # Route to appropriate scoring function
-            if category == 'owner_dependence':
-                result = score_owner_dependence(responses, research_data)
-            elif category == 'revenue_quality':
-                result = score_revenue_quality(responses, research_data)
-            elif category == 'financial_readiness':
-                result = score_financial_readiness(responses, research_data)
-            elif category == 'operational_resilience':
-                result = score_operational_resilience(responses, research_data)
-            elif category == 'growth_value':
-                result = score_growth_value(responses, research_data)
-            else:
-                result = {
-                    "score": DEFAULT_SCORES.get(category, 5.0),
-                    "error": f"Unknown category: {category}",
-                    "gaps": [f"Scoring logic not implemented for {category}"],
-                    "strengths": []
-                }
+            # Format the result as readable text
+            score = result['score']
+            weight = result['weight']
+            weighted_score = score * weight
             
-            # Ensure required fields are present
-            if 'weight' not in result:
-                weights = {
-                    'owner_dependence': 0.25,
-                    'revenue_quality': 0.25,
-                    'financial_readiness': 0.20,
-                    'operational_resilience': 0.15,
-                    'growth_value': 0.15
-                }
-                result['weight'] = weights.get(category, 0.20)
+            # Format strengths and gaps
+            strengths_text = '\n'.join(f"  ✓ {s}" for s in result['strengths'])
+            gaps_text = '\n'.join(f"  ⚠️ {g}" for g in result['gaps'])
             
-            logger.info(f"Category {category} scored: {result.get('score', 'N/A')}")
-            return json.dumps(result)
+            # Format scoring breakdown
+            breakdown = result['scoring_breakdown']
+            adjustments_text = '\n'.join(f"  • {adj}" for adj in breakdown['adjustments'])
+            
+            # Industry context
+            context = result['industry_context']
+            
+            return f"""CATEGORY SCORING: {category.replace('_', ' ').title()} ✓
+
+SCORE: {score}/10 (Weight: {int(weight*100)}%)
+Weighted Contribution: {weighted_score:.1f} points
+
+SCORING BREAKDOWN:
+Base Score: {breakdown['base_score']}
+Adjustments:
+{adjustments_text}
+Final Score: {breakdown['final_score']}
+
+STRENGTHS IDENTIFIED:
+{strengths_text}
+
+GAPS TO ADDRESS:
+{gaps_text}
+
+INDUSTRY CONTEXT:
+• Benchmark: {context['benchmark']}
+• Impact: {context['impact']}
+
+Category assessment complete. Score: {score}/10"""
             
         except Exception as e:
-            logger.error(f"Error calculating category score: {str(e)}", exc_info=True)
-            return json.dumps({
-                "error": f"Scoring error: {str(e)}",
-                "score": 5.0,
-                "gaps": ["Error in scoring calculation"],
-                "strengths": [],
-                "debug_info": str(category_data) if category_data else "No input data"
-            })
+            logger.error(f"Error calculating category score: {str(e)}")
+            return f"""CATEGORY SCORING: Error ❌
+
+Failed to calculate category score.
+Error: {str(e)}
+
+Please check the input data and retry."""
 
 class AggregateFinalScoresTool(BaseTool):
     name: str = "aggregate_final_scores"
     description: str = """
-    Calculate weighted overall score and readiness level from all category scores.
+    Aggregate all category scores into final assessment results.
     
     Input should be JSON string containing all category scores:
-    {"category_scores": {"owner_dependence": {"score": 6.5, "weight": 0.25}, ...}}
+    {"financial_performance": {...}, "revenue_stability": {...}, ...}
     
-    Returns overall score, readiness level, and risk analysis.
+    Returns comprehensive scoring summary as formatted text.
     """
     args_schema: Type[BaseModel] = AggregateFinalScoresInput
     
     def _run(self, all_scores: str = "{}", **kwargs) -> str:
         try:
-            logger.info(f"=== AGGREGATE FINAL SCORES CALLED ===")
-            logger.info(f"Input type: {type(all_scores)}")
+            logger.info("=== AGGREGATE FINAL SCORES CALLED ===")
             
-            # Handle case where CrewAI doesn't pass any arguments
-            if all_scores is None:
-                logger.warning("No scores data provided - using defaults")
-                return json.dumps({
-                    "error": "No scores data provided",
-                    "overall_score": 5.0,
-                    "readiness_level": "Unable to Calculate"
-                })
+            # Handle empty input
+            if not all_scores or all_scores == "{}":
+                return """SCORE AGGREGATION: Failed ❌
+
+No category scores provided for aggregation.
+
+Required: Scores for all 5 categories
+Provided: None
+
+Action Required: Calculate all category scores first."""
             
-            # Use safe JSON parsing
-            data = safe_parse_json(all_scores, {}, "aggregate_final_scores")
-            if not data:
-                return json.dumps({
-                    "error": "No scores data provided",
-                    "overall_score": 5.0,
-                    "readiness_level": "Unable to Calculate"
-                })
+            # Parse input
+            if isinstance(all_scores, dict):
+                scores = all_scores
+            else:
+                scores = safe_parse_json(all_scores, {}, "aggregate_final_scores")
+                if not scores:
+                    return """SCORE AGGREGATION: Failed ❌
+
+Invalid score data format.
+Please provide valid category scores."""
             
-            category_scores = data.get('category_scores', {})
+            # Calculate overall score
+            total_weighted_score = 0.0
+            total_weight = 0.0
+            category_summaries = []
+            all_strengths = []
+            all_gaps = []
             
-            # Calculate weighted average
-            total_weight = 0
-            weighted_sum = 0
+            for category, score_data in scores.items():
+                if isinstance(score_data, dict) and 'score' in score_data:
+                    score = score_data['score']
+                    weight = score_data.get('weight', 0.2)
+                    weighted = score * weight
+                    
+                    total_weighted_score += weighted
+                    total_weight += weight
+                    
+                    category_summaries.append(f"• {category.replace('_', ' ').title()}: {score}/10 (weight {int(weight*100)}%)")
+                    
+                    # Collect strengths and gaps
+                    if 'strengths' in score_data:
+                        all_strengths.extend(score_data['strengths'][:2])  # Top 2 per category
+                    if 'gaps' in score_data:
+                        all_gaps.extend(score_data['gaps'][:2])  # Top 2 per category
             
-            for category, score_data in category_scores.items():
-                score = score_data.get('score', 5.0)
-                weight = score_data.get('weight', 0.20)
-                weighted_sum += score * weight
-                total_weight += weight
+            # Validate we have all categories
+            if total_weight < 0.95:  # Allow small rounding errors
+                return f"""SCORE AGGREGATION: Incomplete ⚠️
+
+Only {int(total_weight*100)}% of categories scored.
+Missing categories detected.
+
+Scores received:
+{chr(10).join(category_summaries)}
+
+Action Required: Complete scoring for all 5 categories."""
             
-            overall_score = weighted_sum / total_weight if total_weight > 0 else 5.0
+            # Calculate final score
+            overall_score = round(total_weighted_score / total_weight, 1) if total_weight > 0 else 0
             
             # Determine readiness level
-            if overall_score >= 8.1:
-                readiness_level = "Exit Ready"
-                readiness_description = "Well-positioned for a successful exit"
-            elif overall_score >= 6.6:
-                readiness_level = "Approaching Ready"
-                readiness_description = "Solid foundation with clear improvement areas"
-            elif overall_score >= 4.1:
-                readiness_level = "Needs Work"
-                readiness_description = "Significant improvements needed before exit"
+            if overall_score >= 8.0:
+                readiness_level = "Premium Ready"
+                readiness_desc = "Exceptionally well-prepared for a premium exit"
+            elif overall_score >= 6.5:
+                readiness_level = "Market Ready"
+                readiness_desc = "Well-positioned for a successful exit"
+            elif overall_score >= 5.0:
+                readiness_level = "Conditionally Ready"
+                readiness_desc = "Ready with specific improvements needed"
+            elif overall_score >= 3.5:
+                readiness_level = "Preparation Needed"
+                readiness_desc = "Significant preparation required before exit"
             else:
                 readiness_level = "Not Ready"
-                readiness_description = "Major transformation required"
+                readiness_desc = "Substantial work needed to prepare for exit"
             
-            # Risk factor analysis
-            risk_factors = {
-                'high_owner_dependence': category_scores.get('owner_dependence', {}).get('score', 10) < 4,
-                'revenue_concentration': any('concentration' in gap and '%' in gap 
-                                           for gap in category_scores.get('revenue_quality', {}).get('gaps', [])),
-                'poor_documentation': category_scores.get('operational_resilience', {}).get('score', 10) < 4,
-                'declining_margins': any('decline' in gap.lower() 
-                                       for gap in category_scores.get('financial_readiness', {}).get('gaps', [])),
-                'no_value_drivers': category_scores.get('growth_value', {}).get('score', 10) < 4
-            }
+            # Format top strengths and gaps
+            top_strengths = list(dict.fromkeys(all_strengths))[:5]  # Remove duplicates, top 5
+            top_gaps = list(dict.fromkeys(all_gaps))[:5]
             
-            active_risks = sum(1 for risk in risk_factors.values() if risk)
+            strengths_text = '\n'.join(f"  ✓ {s}" for s in top_strengths)
+            gaps_text = '\n'.join(f"  ⚠️ {g}" for g in top_gaps)
             
-            # Compound risk adjustment
-            if active_risks >= 4:
-                overall_score *= 0.9
-                risk_note = "Multiple risk factors compound buyer concerns"
-            elif active_risks >= 3:
-                overall_score *= 0.95
-                risk_note = "Several risk factors present"
-            elif active_risks == 0:
-                overall_score *= 1.05
-                risk_note = "Limited risk factors increase attractiveness"
-            else:
-                risk_note = ""
-            
-            return json.dumps({
-                "overall_score": round(overall_score, 1),
-                "readiness_level": readiness_level,
-                "readiness_description": readiness_description,
-                "active_risk_count": active_risks,
-                "risk_factors": risk_factors,
-                "risk_note": risk_note,
-                "calculation_method": "weighted_average_with_risk_adjustment"
-            })
+            return f"""SCORE AGGREGATION: Complete ✓
+
+OVERALL EXIT READINESS SCORE: {overall_score}/10
+READINESS LEVEL: {readiness_level}
+STATUS: {readiness_desc}
+
+CATEGORY BREAKDOWN:
+{chr(10).join(category_summaries)}
+
+TOP STRENGTHS:
+{strengths_text}
+
+PRIORITY GAPS:
+{gaps_text}
+
+SCORE DISTRIBUTION:
+• Excellent (8-10): {sum(1 for cat, data in scores.items() if data.get('score', 0) >= 8)} categories
+• Good (6-7.9): {sum(1 for cat, data in scores.items() if 6 <= data.get('score', 0) < 8)} categories
+• Fair (4-5.9): {sum(1 for cat, data in scores.items() if 4 <= data.get('score', 0) < 6)} categories
+• Poor (1-3.9): {sum(1 for cat, data in scores.items() if data.get('score', 0) < 4)} categories
+
+Final assessment complete. Overall score: {overall_score}/10 ({readiness_level})"""
             
         except Exception as e:
             logger.error(f"Error aggregating scores: {str(e)}")
-            return json.dumps({
-                "error": str(e),
-                "overall_score": 5.0,
-                "readiness_level": "Unable to Calculate"
-            })
+            return f"""SCORE AGGREGATION: Error ❌
+
+Failed to aggregate scores.
+Error: {str(e)}
+
+Please check score data format and retry."""
 
 class CalculateFocusAreasTool(BaseTool):
     name: str = "calculate_focus_areas"
     description: str = """
-    Determine priority focus areas based on ROI calculation.
+    Identify top 3 focus areas and generate specific action items.
     
     Input should be JSON string containing:
-    {"category_scores": {...}, "research_data": {...}, "exit_timeline": "1-2 years", "responses": {...}}
+    {"scores": {...}, "gaps": [...], "timeline": "...", "industry": "..."}
     
-    Returns prioritized focus areas with ROI calculations and specific actions.
+    Returns prioritized action plan as formatted text.
     """
     args_schema: Type[BaseModel] = CalculateFocusAreasInput
     
-    def _run(self, assessment_data: str = "{}", **kwargs) -> str:
+    def _run(self, score_results: str = "{}", **kwargs) -> str:
         try:
-            logger.info(f"=== CALCULATE FOCUS AREAS CALLED ===")
-            logger.info(f"Input type: {type(assessment_data)}")
+            logger.info("=== CALCULATE FOCUS AREAS CALLED ===")
             
-            # Handle case where CrewAI doesn't pass any arguments
-            if assessment_data is None:
-                logger.warning("No assessment data provided - using defaults")
-                return json.dumps({
-                    "error": "No assessment data provided",
-                    "primary_focus": None
-                })
+            # Handle empty input
+            if not score_results or score_results == "{}":
+                return """FOCUS AREAS: Failed ❌
+
+No score results provided for analysis.
+
+Required:
+- Category scores
+- Identified gaps
+- Exit timeline
+- Industry context
+
+Action Required: Provide complete scoring results."""
             
-            # Use safe JSON parsing
-            data = safe_parse_json(assessment_data, {}, "calculate_focus_areas")
-            if not data:
-                return json.dumps({
-                    "error": "No assessment data provided",
-                    "primary_focus": None
-                })
+            # Parse input
+            if isinstance(score_results, dict):
+                data = score_results
+            else:
+                data = safe_parse_json(score_results, {}, "calculate_focus_areas")
+                if not data:
+                    return """FOCUS AREAS: Failed ❌
+
+Invalid data format.
+Please provide valid scoring results."""
             
-            category_scores = data.get('category_scores', {})
-            research_data = data.get('research_data', {})
-            exit_timeline = data.get('exit_timeline', 'Unknown')
-            responses = data.get('responses', {})
+            scores = data.get('scores', {})
+            all_gaps = data.get('gaps', [])
+            timeline = data.get('timeline', '1-2 years')
+            industry = data.get('industry', 'General Business')
             
-            focus_scores = []
+            # Find lowest scoring categories
+            category_scores = []
+            for category, score_data in scores.items():
+                if isinstance(score_data, dict) and 'score' in score_data:
+                    category_scores.append({
+                        'category': category,
+                        'score': score_data['score'],
+                        'weight': score_data.get('weight', 0.2),
+                        'gaps': score_data.get('gaps', [])
+                    })
             
-            for category, score_data in category_scores.items():
-                current_score = score_data.get('score', 5.0)
-                potential_improvement = 10 - current_score
-                
-                # Get improvement data from research
-                improvements = research_data.get('improvements', {})
-                category_improvement = improvements.get(category, {})
-                
-                # Default values if not in research
-                typical_timeline = category_improvement.get('timeline_months', 6)
-                typical_impact = category_improvement.get('value_impact', 0.15)
-                
-                # Timeline urgency multiplier
-                timeline_multiplier = 1.0
-                if "Already in discussions" in exit_timeline:
-                    timeline_multiplier = 3.0 if typical_timeline <= 3 else 0.3
-                elif "1-2 years" in exit_timeline:
-                    timeline_multiplier = 2.0 if typical_timeline <= 6 else 0.7
-                elif "2-3 years" in exit_timeline:
-                    timeline_multiplier = 1.5
-                else:
-                    timeline_multiplier = 1.0
-                
-                # Check for value killers
-                is_value_killer = False
-                killer_reason = ""
-                
-                if category == "owner_dependence" and current_score < 4:
-                    is_value_killer = True
-                    killer_reason = "Severe owner dependence will deter most buyers"
-                    typical_impact *= 2
-                
-                elif category == "revenue_quality":
-                    # Check for high concentration
-                    gaps = score_data.get('gaps', [])
-                    for gap in gaps:
-                        if 'concentration' in gap and '%' in gap:
-                            try:
-                                concentration = int(re.search(r'(\d+)%', gap).group(1))
-                                if concentration > 40:
-                                    is_value_killer = True
-                                    killer_reason = f"{concentration}% revenue concentration is a deal breaker"
-                                    typical_impact *= 1.5
-                                    break
-                            except:
-                                pass
-                
-                # Calculate ROI score
-                effort_factor = 1.0 / (typical_timeline / 6)  # 6 months = baseline
-                roi_score = potential_improvement * typical_impact * timeline_multiplier * effort_factor * 100
-                
-                if is_value_killer:
-                    roi_score *= 2  # Double priority for value killers
-                
-                # Determine quick win potential
-                is_quick_win = typical_timeline <= 3 and typical_impact >= 0.1
-                
-                # Generate specific reasoning
-                reasoning = generate_focus_reasoning(
-                    category, current_score, is_value_killer, killer_reason,
-                    is_quick_win, typical_timeline, typical_impact
-                )
-                
-                focus_scores.append({
-                    'category': category,
-                    'roi_score': round(roi_score, 1),
-                    'current_score': current_score,
-                    'improvement_potential': round(potential_improvement, 1),
-                    'is_value_killer': is_value_killer,
-                    'is_quick_win': is_quick_win,
-                    'typical_timeline_months': typical_timeline,
-                    'expected_impact': f"{int(typical_impact * 100)}%",
-                    'reasoning': reasoning
-                })
+            # Sort by score (lowest first)
+            category_scores.sort(key=lambda x: x['score'])
             
-            # Sort by ROI score
-            focus_scores.sort(key=lambda x: x['roi_score'], reverse=True)
+            # Determine timeline urgency
+            if "Already in discussions" in timeline or "Within 6 months" in timeline:
+                urgency = "IMMEDIATE"
+                timeframe = "Next 30-60 days"
+            elif "6-12 months" in timeline:
+                urgency = "HIGH"
+                timeframe = "Next 3-6 months"
+            elif "1-2 years" in timeline:
+                urgency = "MODERATE"
+                timeframe = "Next 6-12 months"
+            else:
+                urgency = "STRATEGIC"
+                timeframe = "Next 12-24 months"
             
-            # Get specific action items for top priorities
-            for i, focus in enumerate(focus_scores[:3]):
-                focus['quick_actions'] = generate_quick_actions(
-                    focus['category'],
-                    category_scores[focus['category']],
-                    responses
-                )
+            # Generate focus areas
+            focus_areas = []
             
-            return json.dumps({
-                'primary_focus': focus_scores[0] if focus_scores else None,
-                'secondary_focus': focus_scores[1] if len(focus_scores) > 1 else None,
-                'tertiary_focus': focus_scores[2] if len(focus_scores) > 2 else None,
-                'all_focus_areas': focus_scores
-            })
+            # Top 3 lowest scoring categories
+            for i, cat_data in enumerate(category_scores[:3]):
+                category = cat_data['category']
+                score = cat_data['score']
+                gaps = cat_data['gaps']
+                
+                # Generate specific actions
+                actions = generate_category_actions(category, gaps, score, timeline)
+                
+                focus_area = {
+                    'priority': i + 1,
+                    'category': category.replace('_', ' ').title(),
+                    'current_score': score,
+                    'target_score': min(score + 2.0, 8.0),
+                    'impact': calculate_improvement_impact(category, score),
+                    'actions': actions,
+                    'timeline': get_action_timeline(urgency, i)
+                }
+                
+                focus_areas.append(focus_area)
+            
+            # Format output
+            output_lines = [f"FOCUS AREAS: Prioritized ✓",
+                          f"",
+                          f"EXIT TIMELINE: {timeline}",
+                          f"URGENCY LEVEL: {urgency}",
+                          f"ACTION TIMEFRAME: {timeframe}",
+                          f""]
+            
+            for area in focus_areas:
+                output_lines.extend([
+                    f"PRIORITY {area['priority']}: {area['category']}",
+                    f"Current Score: {area['current_score']}/10 → Target: {area['target_score']}/10",
+                    f"Value Impact: {area['impact']}",
+                    f"Timeline: {area['timeline']}",
+                    f"",
+                    f"Action Items:"
+                ])
+                
+                for j, action in enumerate(area['actions'], 1):
+                    output_lines.append(f"  {j}. {action}")
+                
+                output_lines.append("")
+            
+            # Add ROI summary
+            total_impact = sum(float(area['impact'].split('%')[0].split()[-1]) for area in focus_areas if '%' in area['impact'])
+            
+            output_lines.extend([
+                "EXPECTED OUTCOMES:",
+                f"• Combined value increase potential: {int(total_impact)}%",
+                f"• Readiness improvement: {len(focus_areas)} score points",
+                f"• Time to implement: {timeframe}",
+                "",
+                "NEXT STEP:",
+                "Begin with Priority 1 actions immediately for maximum impact."
+            ])
+            
+            return '\n'.join(output_lines)
             
         except Exception as e:
             logger.error(f"Error calculating focus areas: {str(e)}")
-            return json.dumps({"error": str(e), "primary_focus": None})
+            return f"""FOCUS AREAS: Error ❌
 
-def generate_focus_reasoning(category, score, is_value_killer, killer_reason, 
-                           is_quick_win, timeline, impact):
-    """Generate specific reasoning for focus area priority"""
+Failed to calculate focus areas.
+Error: {str(e)}
+
+Please check the scoring results and retry."""
+
+# Helper functions for focus area calculations
+def calculate_improvement_impact(category: str, current_score: float) -> str:
+    """Calculate the value impact of improving a category"""
     
-    base_reasons = {
-        'owner_dependence': "Owner involvement directly impacts valuation and sale feasibility",
-        'revenue_quality': "Revenue predictability and concentration are key buyer concerns",
-        'financial_readiness': "Clean financials are essential for due diligence",
-        'operational_resilience': "Systematic operations reduce buyer risk",
-        'growth_value': "Clear value drivers justify premium valuations"
+    impact_multipliers = {
+        'financial_performance': 0.3,
+        'revenue_stability': 0.25,
+        'operations_efficiency': 0.2,
+        'growth_value': 0.35,
+        'exit_readiness': 0.15
     }
     
-    reasoning = base_reasons.get(category, "Important for exit readiness")
+    multiplier = impact_multipliers.get(category, 0.2)
+    improvement_potential = (8.0 - current_score) / 10.0
+    impact = improvement_potential * multiplier * 100
     
-    if is_value_killer:
-        reasoning = f"CRITICAL: {killer_reason}. Must address before any serious buyer discussions."
-    elif is_quick_win:
-        reasoning += f". Quick win opportunity: {int(impact*100)}% impact achievable in {timeline} months."
-    elif score < 4:
-        reasoning += f". Currently scoring {score}/10 - significant improvement needed."
-    
-    return reasoning
+    if impact > 20:
+        return f"High - up to {int(impact)}% value increase"
+    elif impact > 10:
+        return f"Moderate - up to {int(impact)}% value increase"
+    else:
+        return f"Low - up to {int(impact)}% value increase"
 
-def generate_quick_actions(category, score_data, responses):
-    """Generate specific quick actions based on category and gaps"""
+def get_action_timeline(urgency: str, priority: int) -> str:
+    """Get specific timeline for action based on urgency and priority"""
+    
+    timelines = {
+        'IMMEDIATE': ['Next 30 days', 'Next 45 days', 'Next 60 days'],
+        'HIGH': ['Next 90 days', 'Next 4 months', 'Next 6 months'],
+        'MODERATE': ['Next 6 months', 'Next 9 months', 'Next 12 months'],
+        'STRATEGIC': ['Year 1', 'Year 1-2', 'Year 2']
+    }
+    
+    return timelines.get(urgency, ['Next 6 months', 'Next 9 months', 'Next 12 months'])[priority]
+
+def generate_category_actions(category: str, gaps: List[str], score: float, timeline: str) -> List[str]:
+    """Generate specific action items for a category"""
     
     actions = []
-    gaps = score_data.get('gaps', [])
     
-    if category == 'owner_dependence':
-        if any('certification' in gap for gap in gaps):
-            actions.append("Schedule certification training for senior team member")
-        if any('approval' in gap for gap in gaps):
-            actions.append("Create approval matrix delegating decisions under $50K")
-        if any('client' in gap for gap in gaps):
-            actions.append("Begin introducing senior team to key clients")
-            
-    elif category == 'revenue_quality':
-        if any('concentration' in gap for gap in gaps):
-            actions.append("Develop plan to acquire 3 new major clients")
-        if any('month-to-month' in gap for gap in gaps):
-            actions.append("Convert top 5 clients to annual contracts")
-        if not any('contract' in str(responses.get('q3', '')).lower() for gap in gaps):
-            actions.append("Implement formal service agreements")
-            
-    elif category == 'financial_readiness':
-        if any('confidence' in gap for gap in gaps):
-            actions.append("Engage CPA for financial cleanup project")
-        if any('not tracked' in gap for gap in gaps):
-            actions.append("Implement monthly P&L reviews")
-            
-    elif category == 'operational_resilience':
-        if any('documentation' in gap for gap in gaps):
-            actions.append("Document top 5 critical processes using templates")
-        if any('key person' in gap for gap in gaps):
-            actions.append("Create succession plan for key employee")
-            
+    # Category-specific actions
+    if category == 'financial_performance':
+        if score < 4:
+            actions.append("Implement monthly financial reporting system immediately")
+            actions.append("Engage fractional CFO for financial cleanup")
+        else:
+            actions.append("Upgrade to accrual-based accounting if not already")
+            actions.append("Prepare 3-year audited/reviewed financials")
+        
+        if any('margin' in gap.lower() for gap in gaps):
+            actions.append("Conduct detailed margin analysis and implement pricing optimization")
+    
+    elif category == 'revenue_stability':
+        if score < 5:
+            actions.append("Document and diversify customer base (no customer >20%)")
+            actions.append("Implement customer contracts with auto-renewal terms")
+        else:
+            actions.append("Develop recurring revenue streams or subscription options")
+        
+        actions.append("Create 12-month revenue forecast with confidence intervals")
+    
+    elif category == 'operations_efficiency':
+        if any('owner dependency' in gap.lower() for gap in gaps):
+            actions.append("Hire and train operations manager for daily activities")
+            actions.append("Document all critical processes (aim for 20 SOPs minimum)")
+        
+        if score < 6:
+            actions.append("Implement project management system for visibility")
+        else:
+            actions.append("Create operations manual for seamless transition")
+    
     elif category == 'growth_value':
-        if any('quantification' in gap for gap in gaps):
-            actions.append("Quantify and document all competitive advantages")
-        if any('No clear' in gap for gap in gaps):
-            actions.append("Conduct competitive analysis to identify unique value")
+        if score < 4:
+            actions.append("Identify and document 3 unique value propositions")
+            actions.append("Develop IP strategy (trademarks, trade secrets, processes)")
+        else:
+            actions.append("Create 5-year growth plan with specific milestones")
+        
+        actions.append("Build strategic partnership pipeline for growth acceleration")
     
-    # Default actions if none specific
-    if not actions:
-        actions = [
-            f"Address top gap: {gaps[0]}" if gaps else f"Improve {category}",
-            "Schedule consultation to develop improvement plan"
-        ]
+    elif category == 'exit_readiness':
+        if "Already in discussions" in timeline:
+            actions.append("Engage M&A advisor immediately if not already done")
+            actions.append("Prepare virtual data room with all critical documents")
+        else:
+            actions.append("Complete legal cleanup (contracts, corporate records)")
+            actions.append("Resolve any outstanding litigation or compliance issues")
+        
+        actions.append("Develop transition plan for top 5 key employees")
+    
+    # Ensure we have 3 actions, add generic if needed
+    while len(actions) < 3:
+        if not actions:
+            actions.append(f"Conduct detailed {category.replace('_', ' ')} assessment")
+        elif len(actions) == 1:
+            actions.append(f"Develop improvement plan for {category.replace('_', ' ')}")
+        else:
+            actions.append("Track progress monthly with KPI dashboard")
     
     return actions[:3]  # Return top 3 actions
 

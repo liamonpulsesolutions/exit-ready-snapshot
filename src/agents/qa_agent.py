@@ -44,7 +44,7 @@ class CheckScoringConsistencyTool(BaseTool):
     Input should be JSON string containing:
     {"scores": {"owner_dependence": 6.5, "revenue_quality": 7.0}, "justifications": {"owner_dependence": "Good delegation structure..."}, "responses": {"q1": "I handle client meetings", "q2": "Less than 3 days"}}
     
-    Returns consistency analysis with any issues identified.
+    Returns consistency analysis as formatted text.
     """
     args_schema: Type[BaseModel] = CheckScoringConsistencyInput
     
@@ -57,26 +57,29 @@ class CheckScoringConsistencyTool(BaseTool):
             # Handle case where CrewAI doesn't pass any arguments or passes empty data
             if not scoring_data or scoring_data == "{}":
                 logger.warning("No scoring data provided - using default consistency check")
-                return json.dumps({
-                    "consistent": False,
-                    "error": "No scoring data provided",
-                    "scores_reviewed": 0
-                })
+                return """SCORING CONSISTENCY CHECK: Failed
+
+❌ No scoring data provided for validation
+
+Cannot verify consistency without:
+- Category scores
+- Score justifications
+- Assessment responses
+
+Please ensure scoring is complete before running QA checks."""
             
             # Handle CrewAI passing dict vs string
             if isinstance(scoring_data, dict):
-                # CrewAI passes the actual data as a dict
                 data = scoring_data
             else:
-                # Direct string input - try to parse as JSON
                 data = safe_parse_json(scoring_data, {}, "check_scoring_consistency")
                 
             if not data:
-                return json.dumps({
-                    "consistent": False,
-                    "error": "No scoring data provided",
-                    "scores_reviewed": 0
-                })
+                return """SCORING CONSISTENCY CHECK: Failed
+
+❌ Invalid scoring data format
+
+Please provide properly formatted scoring data for validation."""
             
             scores = data.get('scores', {})
             justifications = data.get('justifications', {})
@@ -127,15 +130,38 @@ class CheckScoringConsistencyTool(BaseTool):
                             "details": f"Low score ({score}) in {category} lacks detailed justification"
                         })
             
-            return json.dumps({
-                "consistent": len(inconsistencies) == 0,
-                "inconsistencies": inconsistencies,
-                "scores_reviewed": len(scores)
-            })
+            # Format result as readable text
+            if len(inconsistencies) == 0:
+                return f"""SCORING CONSISTENCY CHECK: Passed ✓
+
+All scores are logically consistent:
+- Overall score aligns with category averages
+- Score variations are reasonable
+- Low scores have appropriate justifications
+- {len(scores)} categories reviewed
+
+No issues identified."""
+            else:
+                issues_text = '\n'.join(f"• {i['severity'].upper()}: {i['details']}" for i in inconsistencies)
+                return f"""SCORING CONSISTENCY CHECK: Issues Found ⚠️
+
+Found {len(inconsistencies)} consistency issues:
+
+{issues_text}
+
+Scores Reviewed: {len(scores)}
+Critical Issues: {len([i for i in inconsistencies if i['severity'] == 'major'])}
+Minor Issues: {len([i for i in inconsistencies if i['severity'] == 'minor'])}
+
+Recommendation: Review and adjust scoring for consistency."""
             
         except Exception as e:
             logger.error(f"Error checking scoring consistency: {str(e)}")
-            return json.dumps({"error": str(e), "consistent": False})
+            return f"""SCORING CONSISTENCY CHECK: Error
+
+❌ Validation failed: {str(e)}
+
+Please check the scoring data format and try again."""
 
 class VerifyContentQualityTool(BaseTool):
     name: str = "verify_content_quality"
@@ -146,7 +172,7 @@ class VerifyContentQualityTool(BaseTool):
     Input should be JSON string containing:
     {"summary": "Executive summary text...", "recommendations": ["Improve delegation", "Document processes"], "category_summaries": {"owner_dependence": "Analysis text..."}}
     
-    Returns quality assessment with any issues identified.
+    Returns quality assessment as formatted text.
     """
     args_schema: Type[BaseModel] = VerifyContentQualityInput
     
@@ -159,11 +185,16 @@ class VerifyContentQualityTool(BaseTool):
             # Handle case where CrewAI doesn't pass any arguments or passes empty data
             if not content_data or content_data == "{}":
                 logger.warning("No content data provided - using default quality check")
-                return json.dumps({
-                    "quality_acceptable": False,
-                    "error": "No content data provided",
-                    "issues": []
-                })
+                return """CONTENT QUALITY CHECK: Failed
+
+❌ No content provided for quality verification
+
+Cannot assess quality without:
+- Executive summary
+- Recommendations
+- Category summaries
+
+Please ensure report content is generated before QA."""
             
             # Handle CrewAI passing dict vs string
             if isinstance(content_data, dict):
@@ -172,11 +203,11 @@ class VerifyContentQualityTool(BaseTool):
                 data = safe_parse_json(content_data, {}, "verify_content_quality")
                 
             if not data:
-                return json.dumps({
-                    "quality_acceptable": False,
-                    "error": "No content data provided",
-                    "issues": []
-                })
+                return """CONTENT QUALITY CHECK: Failed
+
+❌ Invalid content data format
+
+Please provide properly formatted content for validation."""
             
             summary_content = data.get('summary', '')
             recommendations = data.get('recommendations', [])
@@ -253,15 +284,54 @@ class VerifyContentQualityTool(BaseTool):
                         "details": f"Too casual language: '{word}'"
                     })
             
-            return json.dumps({
-                "quality_acceptable": len([i for i in issues if i['severity'] == 'critical']) == 0,
-                "issues": issues,
-                "total_content_length": len(content_to_check.split())
-            })
+            # Format result as readable text
+            critical_issues = [i for i in issues if i['severity'] == 'critical']
+            major_issues = [i for i in issues if i['severity'] == 'major']
+            minor_issues = [i for i in issues if i['severity'] == 'minor']
+            
+            if len(critical_issues) == 0:
+                quality_status = "Acceptable ✓"
+                recommendation = "Content meets quality standards"
+            else:
+                quality_status = "Needs Revision ❌"
+                recommendation = "Critical issues must be addressed before delivery"
+            
+            issues_summary = f"""
+Critical Issues: {len(critical_issues)}
+Major Issues: {len(major_issues)}
+Minor Issues: {len(minor_issues)}
+
+Total Content Length: {len(content_to_check.split())} words"""
+            
+            if issues:
+                issues_text = '\n'.join(f"• {i['severity'].upper()}: {i['details']}" for i in issues[:5])
+                return f"""CONTENT QUALITY CHECK: {quality_status}
+
+Found {len(issues)} quality issues:
+
+{issues_text}
+{issues_summary}
+
+Recommendation: {recommendation}"""
+            else:
+                return f"""CONTENT QUALITY CHECK: Excellent ✓
+
+Content quality verified:
+- No placeholder text found
+- Recommendations are specific and actionable
+- Professional tone maintained throughout
+- All sections have sufficient detail
+{issues_summary}
+
+Content ready for delivery."""
             
         except Exception as e:
             logger.error(f"Error verifying content quality: {str(e)}")
-            return json.dumps({"error": str(e), "quality_acceptable": False})
+            return f"""CONTENT QUALITY CHECK: Error
+
+❌ Quality verification failed: {str(e)}
+
+Please check the content format and try again."""
 
 class ScanForPIITool(BaseTool):
     name: str = "scan_for_pii"
@@ -273,7 +343,7 @@ class ScanForPIITool(BaseTool):
     {"content": "Report text with potential PII...", "sections": {...}}
     Or plain text: "Report content to scan for PII..."
     
-    Returns PII compliance status with any violations found.
+    Returns PII compliance status as formatted text.
     """
     args_schema: Type[BaseModel] = ScanForPIIInput
     
@@ -286,12 +356,13 @@ class ScanForPIITool(BaseTool):
             # Handle case where CrewAI doesn't pass any arguments or passes empty data
             if not full_content or full_content == "{}":
                 logger.warning("No content provided for PII scan - using default scan")
-                return json.dumps({
-                    "pii_compliant": False,
-                    "error": "No content provided for scanning",
-                    "pii_found": [],
-                    "scan_complete": True
-                })
+                return """PII COMPLIANCE CHECK: Failed
+
+❌ No content provided for PII scanning
+
+Cannot verify privacy compliance without report content.
+
+Please provide the full report text for scanning."""
             
             # Handle CrewAI passing dict vs string
             if isinstance(full_content, dict):
@@ -340,7 +411,9 @@ class ScanForPIITool(BaseTool):
             potential_names = re.findall(name_pattern, all_text)
             
             # Filter out known safe phrases
-            safe_phrases = ['Exit Ready', 'Quick Wins', 'Strategic Priorities', 'Professional Services']
+            safe_phrases = ['Exit Ready', 'Quick Wins', 'Strategic Priorities', 'Professional Services', 
+                           'Owner Dependence', 'Revenue Quality', 'Financial Readiness', 
+                           'Operational Resilience', 'Growth Value', 'On Pulse']
             real_names = [name for name in potential_names if name not in safe_phrases]
             
             if real_names:
@@ -351,15 +424,45 @@ class ScanForPIITool(BaseTool):
                     "examples": real_names[:3]  # Show first 3 examples
                 })
             
-            return json.dumps({
-                "pii_compliant": len(pii_found) == 0,
-                "pii_found": pii_found,
-                "scan_complete": True
-            })
+            # Format result as readable text
+            if len(pii_found) == 0:
+                return """PII COMPLIANCE CHECK: Passed ✓
+
+No personal information detected:
+- No email addresses found
+- No phone numbers found
+- No SSNs or credit cards found
+- No unredacted names found
+- All placeholders properly anonymized
+
+Report is privacy compliant and ready for processing."""
+            else:
+                pii_text = '\n'.join(f"• {p['severity'].upper()}: {p['count']} {p['type'].replace('_', ' ')} found" + 
+                                   (f" (examples: {', '.join(p['examples'][:2])})" if 'examples' in p else '')
+                                   for p in pii_found)
+                
+                return f"""PII COMPLIANCE CHECK: Failed ❌
+
+PRIVACY VIOLATION DETECTED!
+
+Found {len(pii_found)} types of PII:
+
+{pii_text}
+
+Total PII items: {sum(p['count'] for p in pii_found)}
+
+⚠️  CRITICAL: This report contains unredacted personal information.
+Do NOT proceed with delivery until all PII is properly anonymized.
+
+Action Required: Return to PII redaction step immediately."""
             
         except Exception as e:
             logger.error(f"Error scanning for PII: {str(e)}")
-            return json.dumps({"error": str(e), "pii_compliant": False})
+            return f"""PII COMPLIANCE CHECK: Error
+
+❌ PII scan failed: {str(e)}
+
+Cannot verify privacy compliance. Do not proceed without scanning."""
 
 class ValidateReportStructureTool(BaseTool):
     name: str = "validate_report_structure"
@@ -369,7 +472,7 @@ class ValidateReportStructureTool(BaseTool):
     Input should be JSON string containing all report sections:
     {"executive_summary": "Summary text...", "category_scores": {"owner_dependence": {...}}, "category_summaries": {...}, "recommendations": {...}, "next_steps": "Next steps text..."}
     
-    Returns structure validation with any missing or incomplete sections.
+    Returns structure validation results as formatted text.
     """
     args_schema: Type[BaseModel] = ValidateReportStructureInput
     
@@ -382,11 +485,18 @@ class ValidateReportStructureTool(BaseTool):
             # Handle case where CrewAI doesn't pass any arguments or passes empty data
             if not report_data or report_data == "{}":
                 logger.warning("No report data provided - using default structure validation")
-                return json.dumps({
-                    "structure_valid": False,
-                    "error": "No report data provided",
-                    "missing_sections": ["all"]
-                })
+                return """REPORT STRUCTURE CHECK: Failed
+
+❌ No report data provided for structure validation
+
+Cannot verify report completeness without data.
+
+Required sections:
+- Executive Summary
+- Category Scores
+- Category Summaries
+- Recommendations
+- Next Steps"""
             
             # Handle CrewAI passing dict vs string
             if isinstance(report_data, dict):
@@ -395,11 +505,11 @@ class ValidateReportStructureTool(BaseTool):
                 data = safe_parse_json(report_data, {}, "validate_report_structure")
                 
             if not data:
-                return json.dumps({
-                    "structure_valid": False,
-                    "error": "No report data provided",
-                    "missing_sections": ["all"]
-                })
+                return """REPORT STRUCTURE CHECK: Failed
+
+❌ Invalid report data format
+
+Please provide properly formatted report data for validation."""
             
             required_sections = {
                 'executive_summary': 'Executive Summary',
@@ -430,16 +540,45 @@ class ValidateReportStructureTool(BaseTool):
             
             structure_valid = len(missing_sections) == 0 and len(incomplete_sections) == 0
             
-            return json.dumps({
-                "structure_valid": structure_valid,
-                "missing_sections": missing_sections,
-                "incomplete_sections": incomplete_sections,
-                "completeness_score": (5 - len(missing_sections) - len(incomplete_sections)*0.5) / 5 * 10
-            })
+            completeness_score = (5 - len(missing_sections) - len(incomplete_sections)*0.5) / 5 * 10
+            
+            # Format result as readable text
+            if structure_valid:
+                return f"""REPORT STRUCTURE CHECK: Passed ✓
+
+All required sections present and complete:
+✓ Executive Summary
+✓ Category Scores (all 5 categories)
+✓ Category Summaries (all 5 categories)
+✓ Recommendations
+✓ Next Steps
+
+Completeness Score: {completeness_score:.1f}/10
+
+Report structure is complete and ready for final processing."""
+            else:
+                issues_text = ""
+                if missing_sections:
+                    issues_text += f"\nMISSING SECTIONS:\n" + '\n'.join(f"❌ {s}" for s in missing_sections)
+                if incomplete_sections:
+                    issues_text += f"\n\nINCOMPLETE SECTIONS:\n" + '\n'.join(f"⚠️  {s}" for s in incomplete_sections)
+                
+                return f"""REPORT STRUCTURE CHECK: Failed ⚠️
+
+Structure validation issues found:
+{issues_text}
+
+Completeness Score: {completeness_score:.1f}/10
+
+Action Required: Complete all missing/incomplete sections before finalizing report."""
             
         except Exception as e:
             logger.error(f"Error validating report structure: {str(e)}")
-            return json.dumps({"error": str(e), "structure_valid": False})
+            return f"""REPORT STRUCTURE CHECK: Error
+
+❌ Structure validation failed: {str(e)}
+
+Please check the report data format and try again."""
 
 # Create tool instances
 check_scoring_consistency = CheckScoringConsistencyTool()

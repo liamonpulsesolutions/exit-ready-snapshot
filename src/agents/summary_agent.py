@@ -8,7 +8,7 @@ import re
 
 logger = logging.getLogger(__name__)
 
-# Helper functions (unchanged)
+# Helper functions
 def format_category_title(category: str) -> str:
     """Convert category key to readable title"""
     titles = {
@@ -185,7 +185,7 @@ class GenerateCategorySummaryTool(BaseTool):
     Input should be JSON string containing:
     {"category": "owner_dependence", "score_data": {"score": 6.5, "strengths": [...], "gaps": [...]}, "industry_context": {...}, "locale_terms": {...}}
     
-    Returns structured summary with score interpretation, strengths, gaps, and recommendations.
+    Returns formatted category analysis as text.
     """
     args_schema: Type[BaseModel] = GenerateCategorySummaryInput
     
@@ -198,12 +198,15 @@ class GenerateCategorySummaryTool(BaseTool):
             # Handle case where CrewAI doesn't pass any arguments or passes empty data
             if not category_data or category_data == "{}":
                 logger.warning("No category data provided - using default summary")
-                return json.dumps({
-                    "error": "No category data provided",
-                    "category": "unknown",
-                    "category_title": "Category Analysis",
-                    "score": 5.0
-                })
+                return """CATEGORY SUMMARY ERROR: No data provided
+
+Please provide:
+- category: The category to summarize
+- score_data: The scoring results
+- industry_context: Industry benchmarks
+- locale_terms: Locale-specific terminology
+
+Cannot generate summary without this data."""
             
             data = json.loads(category_data) if isinstance(category_data, str) else category_data
             category = data.get('category', '')
@@ -211,35 +214,48 @@ class GenerateCategorySummaryTool(BaseTool):
             industry_context = data.get('industry_context', {})
             locale_terms = data.get('locale_terms', {})
             
-            # Structure the summary components
-            summary_structure = {
-                "category": category,
-                "category_title": format_category_title(category),
-                "score": score_data.get('score', 5.0),
-                "score_interpretation": interpret_score_meaning(
-                    score_data.get('score', 5.0),
-                    category,
-                    industry_context
-                ),
-                "strengths": score_data.get('strengths', []),
-                "gaps": score_data.get('gaps', []),
-                "industry_benchmark": score_data.get('industry_context', {}).get('benchmark', ''),
-                "impact": score_data.get('industry_context', {}).get('impact', ''),
-                "improvement_timeline": score_data.get('improvement_potential', {}).get('timeline', '6-9 months'),
-                "improvement_impact": score_data.get('improvement_potential', {}).get('impact', '10-15% value increase'),
-                "specific_recommendations": generate_category_recommendations(
-                    category,
-                    score_data.get('score', 5.0),
-                    score_data.get('gaps', []),
-                    score_data.get('strengths', [])
-                )
-            }
+            # Extract key data
+            category_title = format_category_title(category)
+            score = score_data.get('score', 5.0)
+            strengths = score_data.get('strengths', [])
+            gaps = score_data.get('gaps', [])
             
-            return json.dumps(summary_structure)
+            # Generate recommendations
+            recommendations = generate_category_recommendations(category, score, gaps, strengths)
+            
+            # Format the summary as readable text
+            summary_text = f"""
+{category_title.upper()} ANALYSIS
+
+SCORE: {score}/10
+
+{interpret_score_meaning(score, category, industry_context)}
+
+STRENGTHS WE IDENTIFIED:
+{chr(10).join(f'• {s}' for s in strengths[:3]) if strengths else '• Limited strengths identified in current state'}
+
+CRITICAL GAPS:
+{chr(10).join(f'• {g}' for g in gaps[:3]) if gaps else '• No critical gaps identified'}
+
+YOUR ACTION PLAN:
+
+{chr(10).join(f'{i+1}. {r["timeframe"].upper()}: {r["action"]}' + chr(10) + f'   Impact: {r["impact"]}' for i, r in enumerate(recommendations[:3]))}
+
+INDUSTRY BENCHMARK: {score_data.get('industry_context', {}).get('benchmark', 'Industry standard expectations')}
+
+VALUATION IMPACT: {score_data.get('industry_context', {}).get('impact', 'Standard market impact')}
+
+This analysis shows {'significant improvement potential' if score < 6 else 'solid positioning'} in {category_title.lower()}, which is {'critical' if category in ['owner_dependence', 'revenue_quality'] else 'important'} for achieving optimal exit value."""
+            
+            return summary_text
             
         except Exception as e:
             logger.error(f"Error generating category summary: {str(e)}")
-            return json.dumps({"error": str(e)})
+            return f"""CATEGORY SUMMARY ERROR: Generation failed
+
+Error: {str(e)}
+
+Please check the input data format and try again."""
 
 class CreateExecutiveSummaryTool(BaseTool):
     name: str = "create_executive_summary"
@@ -249,7 +265,7 @@ class CreateExecutiveSummaryTool(BaseTool):
     Input should be JSON string containing:
     {"overall_score": 6.5, "readiness_level": "Approaching Ready", "category_scores": {...}, "focus_areas": {...}, "industry_context": {...}, "business_info": {...}}
     
-    Returns structured executive summary components.
+    Returns formatted executive summary text.
     """
     args_schema: Type[BaseModel] = CreateExecutiveSummaryInput
     
@@ -262,11 +278,16 @@ class CreateExecutiveSummaryTool(BaseTool):
             # Handle case where CrewAI doesn't pass any arguments or passes empty data
             if not assessment_data or assessment_data == "{}":
                 logger.warning("No assessment data provided - using default executive summary")
-                return json.dumps({
-                    "error": "No assessment data provided",
-                    "opening_context": {"industry": "Unknown", "location": "Unknown"},
-                    "overall_assessment": {"score": 5.0, "readiness_level": "Unable to Calculate"}
-                })
+                return """EXECUTIVE SUMMARY ERROR: No assessment data provided
+
+Cannot create executive summary without:
+- overall_score
+- readiness_level
+- category_scores
+- focus_areas
+- business_info
+
+Please complete the assessment first."""
             
             data = json.loads(assessment_data) if isinstance(assessment_data, str) else assessment_data
             overall_score = data.get('overall_score', 5.0)
@@ -285,50 +306,42 @@ class CreateExecutiveSummaryTool(BaseTool):
             current_multiple = industry_context.get('current_multiple_estimate', '4-6x')
             potential_multiple = industry_context.get('improved_multiple_estimate', '5-7x')
             
-            # Structure for LLM to expand
-            summary_structure = {
-                "opening_context": {
-                    "industry": business_info.get('industry', 'your industry'),
-                    "location": business_info.get('location', 'your region'),
-                    "years_in_business": business_info.get('years_in_business', ''),
-                    "exit_timeline": business_info.get('exit_timeline', '')
-                },
-                "overall_assessment": {
-                    "score": overall_score,
-                    "readiness_level": readiness_level,
-                    "score_meaning": get_overall_score_interpretation(overall_score)
-                },
-                "key_findings": {
-                    "strongest_area": {
-                        "category": highest_score[0] if highest_score else '',
-                        "score": highest_score[1].get('score', 0) if highest_score else 0,
-                        "significance": highest_score[1].get('strengths', [''])[0] if highest_score else ''
-                    },
-                    "weakest_area": {
-                        "category": lowest_score[0] if lowest_score else '',
-                        "score": lowest_score[1].get('score', 10) if lowest_score else 10,
-                        "impact": lowest_score[1].get('gaps', [''])[0] if lowest_score else ''
-                    },
-                    "critical_insight": primary_focus.get('reasoning', '') if primary_focus else ''
-                },
-                "value_proposition": {
-                    "current_state": f"Currently positioned for {current_multiple} EBITDA multiple",
-                    "potential_state": f"Could achieve {potential_multiple} with improvements",
-                    "key_lever": primary_focus.get('category', '') if primary_focus else ''
-                },
-                "call_to_action": {
-                    "timeline": business_info.get('exit_timeline', ''),
-                    "urgency": "high" if "1-2 years" in business_info.get('exit_timeline', '') else "moderate"
-                }
-            }
+            # Format executive summary as readable text
+            executive_summary = f"""EXECUTIVE SUMMARY
+
+Thank you for completing the Exit Ready Snapshot assessment. As a {business_info.get('industry', 'business')} owner in {business_info.get('location', 'your region')} with {business_info.get('years_in_business', 'your years')} of experience, you're taking an important step toward maximizing your business value.
+
+OVERALL ASSESSMENT: {overall_score}/10 - {readiness_level}
+
+{get_overall_score_interpretation(overall_score)}
+
+KEY FINDINGS:
+
+Your Strongest Area: {format_category_title(highest_score[0]) if highest_score else 'To be determined'} ({highest_score[1].get('score', 0)}/10)
+{'- ' + (highest_score[1].get('strengths', ['Strong foundation'])[0] if highest_score[1].get('strengths') else 'Strong foundation') if highest_score else ''}
+
+Your Biggest Opportunity: {format_category_title(lowest_score[0]) if lowest_score else 'To be determined'} ({lowest_score[1].get('score', 10)}/10)
+{'- ' + (lowest_score[1].get('gaps', ['Improvement needed'])[0] if lowest_score[1].get('gaps') else 'Improvement needed') if lowest_score else ''}
+
+VALUE PROPOSITION:
+Based on your assessment, your business is currently positioned for a {current_multiple} EBITDA multiple. With focused improvements in {format_category_title(primary_focus.get('category', '')) if primary_focus else 'key areas'}, you could achieve {potential_multiple} - a potential {'20-40%' if overall_score < 6 else '15-25%'} increase in sale value.
+
+YOUR EXIT TIMELINE: {business_info.get('exit_timeline', 'Not specified')}
+{'⚠️  URGENT: Your timeline requires immediate action on critical improvements.' if '1-2 years' in business_info.get('exit_timeline', '') or 'Already' in business_info.get('exit_timeline', '') else 'You have time to optimize value before exit.'}
+
+The path forward is clear: focus on {format_category_title(primary_focus.get('category', '')) if primary_focus else 'your highest-impact improvements'} to unlock significant value. Your business has {'strong potential' if overall_score >= 5 else 'clear opportunities'} for enhancement that buyers will reward."""
             
-            return json.dumps(summary_structure)
+            return executive_summary
             
         except Exception as e:
             logger.error(f"Error creating executive summary: {str(e)}")
-            return json.dumps({"error": str(e)})
+            return f"""EXECUTIVE SUMMARY ERROR: Generation failed
 
-class GenerateRecommendationsTool(BaseTool):
+Error: {str(e)}
+
+Please ensure assessment data is complete before creating summary."""
+        
+ class GenerateRecommendationsTool(BaseTool):
     name: str = "generate_recommendations"
     description: str = """
     Generate comprehensive recommendations section with Quick Wins, Strategic Priorities, and Critical Focus.
@@ -336,7 +349,7 @@ class GenerateRecommendationsTool(BaseTool):
     Input should be JSON string containing:
     {"focus_areas": {"primary_focus": {...}, "secondary_focus": {...}}, "category_scores": {...}, "business_info": {"exit_timeline": "1-2 years"}}
     
-    Returns structured recommendations with quick wins, strategic priorities, and critical focus area.
+    Returns formatted recommendations text with actionable advice.
     """
     args_schema: Type[BaseModel] = GenerateRecommendationsInput
     
@@ -349,12 +362,26 @@ class GenerateRecommendationsTool(BaseTool):
             # Handle case where CrewAI doesn't pass any arguments or passes empty data
             if not full_assessment or full_assessment == "{}":
                 logger.warning("No assessment data provided - using default recommendations")
-                return json.dumps({
-                    "error": "No assessment data provided",
-                    "quick_wins": ["Schedule process documentation", "Review client contracts", "Identify delegation opportunities"],
-                    "strategic_priorities": [],
-                    "critical_focus": {"area": "Business Systematization"}
-                })
+                return """RECOMMENDATIONS ERROR: No assessment data provided
+
+Cannot generate recommendations without:
+- focus_areas (from scoring)
+- category_scores
+- business_info
+
+Using generic recommendations:
+
+QUICK WINS (30 DAYS):
+1. Schedule process documentation sessions
+2. Review client contract terms
+3. Identify delegation opportunities
+
+STRATEGIC PRIORITIES (3-6 MONTHS):
+1. Implement systematic improvements
+2. Reduce owner dependence
+3. Improve financial documentation
+
+Please complete assessment for personalized recommendations."""
             
             data = json.loads(full_assessment) if isinstance(full_assessment, str) else full_assessment
             focus_areas = data.get('focus_areas', {})
@@ -444,22 +471,50 @@ class GenerateRecommendationsTool(BaseTool):
                 "success_metrics": generate_success_metrics(primary.get('category', '')) if primary else ['Track improvement progress']
             }
             
-            recommendations_structure = {
-                "quick_wins": quick_wins[:3],
-                "strategic_priorities": strategic_priorities[:3],
-                "critical_focus": critical_focus,
-                "implementation_guidance": {
-                    "timeline": exit_timeline,
-                    "resource_needs": estimate_resource_needs(strategic_priorities),
-                    "expected_roi": calculate_expected_roi(focus_areas)
-                }
-            }
+            # Format recommendations as readable text
+            recommendations_text = f"""YOUR PERSONALIZED ACTION PLAN
+
+{'⚠️  TIMELINE ALERT: ' + exit_timeline if 'Already' in exit_timeline or '1-2' in exit_timeline else 'EXIT TIMELINE: ' + exit_timeline}
+
+QUICK WINS (NEXT 30 DAYS)
+These high-impact actions can be implemented immediately:
+
+{chr(10).join(f'{i+1}. {qw["action"]}' + chr(10) + f'   Category: {qw["category"]}' + chr(10) + f'   Impact: {qw["impact"]}' + chr(10) for i, qw in enumerate(quick_wins[:3]))}
+
+STRATEGIC PRIORITIES (3-6 MONTHS)
+Major initiatives that will transform your business value:
+
+{chr(10).join(f'{i+1}. {sp["initiative"]}' + chr(10) + f'   Timeline: {sp["timeline"]}' + chr(10) + f'   Expected Outcome: {sp["expected_outcome"]}' + chr(10) + f'   First Step: {sp["first_steps"]}' + chr(10) for i, sp in enumerate(strategic_priorities[:3]))}
+
+🎯 YOUR CRITICAL FOCUS AREA: {critical_focus['area']}
+{'⚠️  THIS IS A VALUE KILLER - MUST ADDRESS IMMEDIATELY' if critical_focus['is_value_killer'] else ''}
+
+WHY THIS MATTERS MOST:
+{critical_focus['why_critical']}
+
+TIMELINE FIT: {critical_focus['timeline_alignment']}
+
+THIS WEEK'S ACTIONS:
+{chr(10).join(f'□ {action}' for action in critical_focus['first_week_actions'][:3])}
+
+SUCCESS METRICS TO TRACK:
+{chr(10).join(f'• {metric}' for metric in critical_focus['success_metrics'][:3])}
+
+IMPLEMENTATION GUIDANCE:
+Resource Needs: {estimate_resource_needs(strategic_priorities)}
+Expected ROI: {calculate_expected_roi(focus_areas)}
+
+Remember: Consistent execution of these recommendations will position your business for maximum value at exit. Start with your critical focus area TODAY."""
             
-            return json.dumps(recommendations_structure)
+            return recommendations_text
             
         except Exception as e:
             logger.error(f"Error generating recommendations: {str(e)}")
-            return json.dumps({"error": str(e)})
+            return f"""RECOMMENDATIONS ERROR: Generation failed
+
+Error: {str(e)}
+
+Please ensure assessment is complete before generating recommendations."""
 
 def assess_timeline_fit(improvement_months: int, exit_timeline: str) -> str:
     """Assess if improvement timeline fits with exit plans"""
@@ -584,7 +639,7 @@ class CreateIndustryContextTool(BaseTool):
     Input should be JSON string containing:
     {"research_findings": {...}, "business_info": {"industry": "Manufacturing", "location": "Northeast US"}, "scores": {...}}
     
-    Returns structured industry context with market conditions and competitive positioning.
+    Returns formatted industry context and market positioning text.
     """
     args_schema: Type[BaseModel] = CreateIndustryContextInput
     
@@ -597,44 +652,74 @@ class CreateIndustryContextTool(BaseTool):
             # Handle case where CrewAI doesn't pass any arguments or passes empty data
             if not industry_data or industry_data == "{}":
                 logger.warning("No industry data provided - using default context")
-                return json.dumps({
-                    "error": "No industry data provided",
-                    "industry": "Unknown",
-                    "market_conditions": {"current_multiples": "4-6x", "buyer_priorities": [], "average_sale_time": "9-12 months"}
-                })
+                return """INDUSTRY CONTEXT ERROR: No data provided
+
+Cannot create industry context without:
+- research_findings
+- business_info
+- scores
+
+Using generic market context:
+
+MARKET CONDITIONS:
+- Current multiples: 4-6x EBITDA (varies by industry)
+- Buyer priorities: Recurring revenue, systematic operations, growth potential
+- Average sale time: 9-12 months
+
+Please provide research data for personalized context."""
             
             data = json.loads(industry_data) if isinstance(industry_data, str) else industry_data
             research_findings = data.get('research_findings', {})
             business_info = data.get('business_info', {})
             scores = data.get('scores', {})
             
-            context_structure = {
-                "industry": business_info.get('industry', ''),
-                "location": business_info.get('location', ''),
-                "revenue_range": business_info.get('revenue_range', ''),
-                "market_conditions": {
-                    "current_multiples": research_findings.get('valuation_benchmarks', {}).get('base_EBITDA', '4-6x'),
-                    "buyer_priorities": research_findings.get('buyer_priorities', []),
-                    "average_sale_time": research_findings.get('average_sale_time', '9-12 months'),
-                    "key_trend": research_findings.get('key_trend', '')
-                },
-                "your_position": {
-                    "strengths_vs_market": identify_market_strengths(scores, research_findings),
-                    "gaps_vs_market": identify_market_gaps(scores, research_findings),
-                    "competitive_position": assess_competitive_position(scores, research_findings)
-                },
-                "opportunity_analysis": {
-                    "value_enhancement_potential": calculate_enhancement_potential(scores, research_findings),
-                    "timeline_reality": assess_timeline_reality(business_info.get('exit_timeline', ''), scores),
-                    "market_timing": research_findings.get('market_timing', 'Stable M&A environment')
-                }
-            }
+            # Format industry context as readable text
+            context_text = f"""INDUSTRY & MARKET CONTEXT
+
+YOUR MARKET: {business_info.get('industry', 'Your Industry')} in {business_info.get('location', 'Your Region')}
+REVENUE RANGE: {business_info.get('revenue_range', 'Not specified')}
+
+CURRENT MARKET CONDITIONS:
+
+Valuation Benchmarks:
+• EBITDA Multiples: {research_findings.get('valuation_benchmarks', {}).get('base_EBITDA', '4-6x')}
+• Revenue Multiples: {research_findings.get('valuation_benchmarks', {}).get('base_revenue', '1.2-2.0x')}
+• Premium for {research_findings.get('valuation_benchmarks', {}).get('recurring_threshold', '60%')}+ recurring revenue: {research_findings.get('valuation_benchmarks', {}).get('recurring_premium', '1-2x additional')}
+
+Buyer Priorities (in order):
+{chr(10).join(f'{i+1}. {priority}' for i, priority in enumerate(research_findings.get('buyer_priorities', ['Recurring revenue', 'Systematic operations', 'Growth potential'])[:3]))}
+
+Market Dynamics:
+• Average Time to Sell: {research_findings.get('average_sale_time', '9-12 months')}
+• Key Trend: {research_findings.get('key_trend', 'Buyers increasingly value technology integration')}
+
+YOUR COMPETITIVE POSITION:
+
+Strengths vs Market:
+{chr(10).join(f'• {s}' for s in identify_market_strengths(scores, research_findings)[:3])}
+
+Gaps vs Market Expectations:
+{chr(10).join(f'• {g}' for g in identify_market_gaps(scores, research_findings)[:3])}
+
+Overall Position: {assess_competitive_position(scores, research_findings)}
+
+VALUE ENHANCEMENT OPPORTUNITY:
+{calculate_enhancement_potential(scores, research_findings)}
+
+TIMELINE CONSIDERATIONS:
+{assess_timeline_reality(business_info.get('exit_timeline', ''), scores)}
+
+KEY TAKEAWAY: {generate_market_insight(scores, research_findings, business_info)}"""
             
-            return json.dumps(context_structure)
+            return context_text
             
         except Exception as e:
             logger.error(f"Error creating industry context: {str(e)}")
-            return json.dumps({"error": str(e)})
+            return f"""INDUSTRY CONTEXT ERROR: Generation failed
+
+Error: {str(e)}
+
+Please ensure research data is available before creating context."""
 
 def identify_market_strengths(scores: Dict, research: Dict) -> List[str]:
     """Identify strengths relative to market"""
@@ -722,15 +807,27 @@ def assess_timeline_reality(exit_timeline: str, scores: Dict) -> str:
     else:
         return "Sufficient time for systematic improvements"
 
+def generate_market_insight(scores: Dict, research: Dict, business_info: Dict) -> str:
+    """Generate key market insight"""
+    overall = scores.get('overall_score', 5.0)
+    industry = business_info.get('industry', 'your industry')
+    
+    if overall >= 7:
+        return f"Your business is well-positioned in the {industry} market. Focus on maximizing premium through strategic improvements."
+    elif overall >= 5:
+        return f"The {industry} market rewards systematic businesses. Your improvement plan aligns with buyer priorities."
+    else:
+        return f"Current {industry} buyers are selective. Significant improvements needed to compete effectively."
+
 class StructureFinalReportTool(BaseTool):
     name: str = "structure_final_report"
     description: str = """
     Structure all components into final report format for PDF generation.
     
     Input should be JSON string containing all report components:
-    {"executive_summary": {...}, "category_summaries": {...}, "recommendations": {...}, "industry_context": {...}, "business_info": {...}}
+    {"executive_summary": "...", "category_summaries": {...}, "recommendations": "...", "industry_context": "...", "business_info": {...}}
     
-    Returns complete report structure ready for PDF generation.
+    Returns complete structured report text ready for delivery.
     """
     args_schema: Type[BaseModel] = StructureFinalReportInput
     
@@ -743,123 +840,111 @@ class StructureFinalReportTool(BaseTool):
             # Handle case where CrewAI doesn't pass any arguments or passes empty data
             if not complete_data or complete_data == "{}":
                 logger.warning("No complete data provided - using default report structure")
-                return json.dumps({
-                    "error": "No complete data provided",
-                    "metadata": {"report_type": "Exit Ready Snapshot Assessment"},
-                    "sections": []
-                })
+                return """REPORT STRUCTURE ERROR: No data provided
+
+Cannot structure report without:
+- executive_summary
+- category_summaries
+- recommendations
+- industry_context
+- next_steps
+
+Please ensure all report sections are generated first."""
             
             data = json.loads(complete_data) if isinstance(complete_data, str) else complete_data
             
             # Extract all components
-            executive_summary = data.get('executive_summary', {})
+            executive_summary = data.get('executive_summary', '')
             category_summaries = data.get('category_summaries', {})
-            recommendations = data.get('recommendations', {})
-            industry_context = data.get('industry_context', {})
-            next_steps = data.get('next_steps', {})
+            recommendations = data.get('recommendations', '')
+            industry_context = data.get('industry_context', '')
+            next_steps = data.get('next_steps', '')
+            overall_score = data.get('overall_score', 0)
+            readiness_level = data.get('readiness_level', '')
             
-            # Structure for PDF generation
-            report_structure = {
-                "metadata": {
-                    "report_type": "Exit Ready Snapshot Assessment",
-                    "generation_date": data.get('timestamp', ''),
-                    "business_info": data.get('business_info', {}),
-                    "overall_score": data.get('overall_score', 0),
-                    "readiness_level": data.get('readiness_level', '')
-                },
-                "sections": [
-                    {
-                        "type": "executive_summary",
-                        "title": "Executive Summary",
-                        "content": executive_summary,
-                        "word_count": 200
-                    },
-                    {
-                        "type": "score_overview",
-                        "title": "Your Exit Readiness Score",
-                        "content": {
-                            "overall_score": data.get('overall_score', 0),
-                            "readiness_level": data.get('readiness_level', ''),
-                            "category_scores": format_category_scores_for_display(data.get('category_scores', {}))
-                        }
-                    },
-                    {
-                        "type": "category_analysis",
-                        "title": "Detailed Analysis",
-                        "subsections": category_summaries
-                    },
-                    {
-                        "type": "recommendations",
-                        "title": "Your Action Plan",
-                        "content": recommendations
-                    },
-                    {
-                        "type": "industry_context",
-                        "title": "Market Context",
-                        "content": industry_context
-                    },
-                    {
-                        "type": "next_steps",
-                        "title": "Next Steps",
-                        "content": next_steps
-                    }
-                ],
-                "formatting_instructions": {
-                    "font": "Professional sans-serif",
-                    "colors": {
-                        "primary": "#2C3E50",
-                        "accent": "#3498DB",
-                        "success": "#27AE60",
-                        "warning": "#F39C12",
-                        "danger": "#E74C3C"
-                    },
-                    "score_colors": get_score_color_mapping()
-                }
-            }
+            # Default next steps if not provided
+            if not next_steps:
+                next_steps = """NEXT STEPS
+
+Your Exit Ready Snapshot has identified clear opportunities to enhance your business value. Here's how to move forward:
+
+1. IMMEDIATE ACTION (This Week):
+   □ Review this report with your leadership team
+   □ Commit to your primary focus area
+   □ Schedule time for your first week actions
+
+2. SHORT TERM (Next 30 Days):
+   □ Complete all Quick Win initiatives
+   □ Begin implementing your Critical Focus Area improvements
+   □ Track progress using the success metrics provided
+
+3. STRATEGIC PLANNING (Next 90 Days):
+   □ Launch your Strategic Priority initiatives
+   □ Consider professional guidance for complex improvements
+   □ Re-assess progress quarterly
+
+PROFESSIONAL SUPPORT OPTIONS:
+• Exit Value Growth Plan: Deep-dive analysis with personalized roadmap
+• Implementation Support: Hands-on help with critical improvements
+• M&A Advisory: When you're ready for the exit process
+
+Remember: Every improvement you make increases your business value and exit options.
+
+Contact us at success@onpulsesolutions.com to discuss your personalized Exit Value Growth Plan."""
             
-            return json.dumps(report_structure)
+            # Structure the complete report
+            report_structure = f"""EXIT READY SNAPSHOT ASSESSMENT REPORT
+
+{'='*60}
+
+{executive_summary}
+
+{'='*60}
+
+YOUR EXIT READINESS SCORE
+
+Overall Score: {overall_score}/10
+Readiness Level: {readiness_level}
+
+{'='*60}
+
+DETAILED ANALYSIS BY CATEGORY
+
+{chr(10).join(f'{summary}' + chr(10) + ('='*60) for summary in category_summaries.values()) if category_summaries else 'Category analysis not available'}
+
+{'='*60}
+
+{recommendations}
+
+{'='*60}
+
+{industry_context}
+
+{'='*60}
+
+{next_steps}
+
+{'='*60}
+
+CONFIDENTIAL BUSINESS ASSESSMENT
+Prepared by: On Pulse Solutions
+Report Date: [REPORT_DATE]
+Valid for: 90 days
+
+This report contains proprietary analysis and recommendations specific to your business. 
+The insights and strategies outlined are based on your assessment responses and current market conditions.
+
+© On Pulse Solutions - Exit Ready Snapshot Assessment"""
+            
+            return report_structure
             
         except Exception as e:
             logger.error(f"Error structuring final report: {str(e)}")
-            return json.dumps({"error": str(e)})
+            return f"""REPORT STRUCTURE ERROR: Assembly failed
 
-def format_category_scores_for_display(category_scores: Dict) -> List[Dict]:
-    """Format category scores for visual display"""
-    formatted = []
-    category_order = ['owner_dependence', 'revenue_quality', 'financial_readiness', 
-                     'operational_resilience', 'growth_value']
-    
-    for category in category_order:
-        if category in category_scores:
-            score_data = category_scores[category]
-            formatted.append({
-                "category": format_category_title(category),
-                "score": score_data.get('score', 0),
-                "weight": f"{int(score_data.get('weight', 0.2) * 100)}%",
-                "color": get_score_color(score_data.get('score', 0))
-            })
-    
-    return formatted
+Error: {str(e)}
 
-def get_score_color(score: float) -> str:
-    """Get color for score display"""
-    if score >= 8:
-        return "#27AE60"  # Green
-    elif score >= 6.5:
-        return "#F39C12"  # Orange
-    elif score >= 4.5:
-        return "#E74C3C"  # Red
-    else:
-        return "#C0392B"  # Dark Red
-
-def get_score_color_mapping() -> Dict[str, str]:
-    """Get score range to color mapping"""
-    return {
-        "excellent": "#27AE60",
-        "good": "#F39C12", 
-        "needs_work": "#E74C3C",
-        "critical": "#C0392B"
-    }
+Please ensure all report sections are complete before final assembly."""
 
 # Create tool instances
 generate_category_summary = GenerateCategorySummaryTool()
@@ -891,4 +976,4 @@ def create_summary_agent(llm, prompts: Dict[str, Any]) -> Agent:
         verbose=True,
         allow_delegation=False,
         max_iter=5
-    )
+    )       
