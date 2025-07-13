@@ -83,13 +83,6 @@ class ExitReadySnapshotCrew:
         }
         
         logger.info(f"Initialized {len(self.agents)} agents for locale: {self.locale}")
-        logger.info("LLM Configuration:")
-        logger.info("  - Research Agent: GPT-4.1 mini (data formatting)")
-        logger.info("  - Scoring Agent: GPT-4.1 mini (analysis)")
-        logger.info("  - Summary Agent: GPT-4.1 mini (content generation)")
-        logger.info("  - Intake Agent: GPT-4.1 nano (PII handling)")
-        logger.info("  - QA Agent: GPT-4.1 nano (validation)")
-        logger.info("  - PII Reinsertion Agent: GPT-4.1 nano (text replacement)")
     
     def get_industry_context(self, industry: str) -> str:
         """Get industry-specific context if available"""
@@ -102,6 +95,7 @@ class ExitReadySnapshotCrew:
         self.tasks = []
         
         # Task 1: Intake and PII Processing (GPT-4.1 nano)
+        # CRITICAL FIX: Make expected_output very specific and structured
         intake_task = Task(
             description=f"""
 {self.prompts['intake_agent']['task_template']}
@@ -109,13 +103,24 @@ class ExitReadySnapshotCrew:
 Process the form data provided in the inputs.
 
 Use the process_complete_form tool to handle the complete intake workflow.
+
+CRITICAL: You must return your output as a valid JSON object with these exact keys:
+{{
+  "uuid": "assessment-uuid",
+  "anonymized_data": {{...}},
+  "pii_mapping_stored": true,
+  "validation_status": "success"
+}}
+
+Do not add any explanation text before or after the JSON.
             """,
             agent=self.agents['intake'],
-            expected_output="Structured JSON with anonymized data and PII mapping stored"
+            expected_output="""A valid JSON object with keys: uuid, anonymized_data, pii_mapping_stored, validation_status. No additional text or explanation."""
         )
         self.tasks.append(intake_task)
         
         # Task 2: Industry Research (GPT-4.1 mini)
+        # CRITICAL FIX: Specify exact output format to prevent retries
         research_task = Task(
             description=f"""
 {self.prompts['research_agent']['task_template']}
@@ -125,55 +130,70 @@ Research data for:
 - Location: {formatted_inputs.get('location', 'US')}
 - Revenue Range: {formatted_inputs.get('revenue_range', '$1M-$5M')}
 
-Use research_industry_trends tool with the industry information provided.
-Then use format_research_output to structure the findings.
+PROCESS:
+1. Use research_industry_trends tool with the industry information provided
+2. Use format_research_output to structure the findings into the required format
+
+CRITICAL: Return only a valid JSON object with this structure:
+{{
+  "valuation_benchmarks": {{...}},
+  "improvements": {{...}},
+  "market_conditions": {{...}},
+  "sources": [...]
+}}
+
+Do not add explanatory text. Return only the JSON.
             """,
             agent=self.agents['research'],
-            expected_output="""Structured research data including:
-            - Valuation benchmarks with specific multiples and thresholds
-            - Improvement examples with timelines and impacts
-            - Market conditions and buyer priorities
-            - All data properly formatted for scoring and summary agents""",
+            expected_output="""A valid JSON object containing valuation_benchmarks, improvements, market_conditions, and sources. No explanatory text.""",
             context=[intake_task]
         )
         self.tasks.append(research_task)
 
         # Task 3: Scoring and Evaluation (GPT-4.1 mini)
+        # CRITICAL FIX: Structured output expectation
         scoring_task = Task(
             description=f"""
 {self.prompts['scoring_agent']['task_template']}
 
-Score the assessment using the anonymized responses from the intake task.
+Score the assessment using the anonymized responses from the intake task and industry research from the research task.
 
 For each category (owner_dependence, revenue_quality, financial_readiness, operational_resilience, growth_value):
-1. Use calculate_category_score tool with the category name and response data
-2. Aggregate all scores using aggregate_final_scores tool
-3. Calculate focus areas using calculate_focus_areas tool
+1. Use calculate_category_score tool with the category data
+2. Use aggregate_final_scores tool to combine all scores
+3. Use calculate_focus_areas tool to determine priorities
 
 Exit timeline: {formatted_inputs.get('exit_timeline', 'Unknown')}
 
-The anonymized responses and industry research will be available via task context from previous tasks.
+CRITICAL: Return a valid JSON object with this exact structure:
+{{
+  "category_scores": {{
+    "owner_dependence": {{"score": 6.5, "strengths": [...], "gaps": [...]}},
+    "revenue_quality": {{"score": 7.0, "strengths": [...], "gaps": [...]}},
+    ...
+  }},
+  "overall_score": 6.8,
+  "readiness_level": "Approaching Ready",
+  "focus_areas": {{...}}
+}}
+
+Return only the JSON object, no additional text.
             """,
             agent=self.agents['scoring'],
-            expected_output="""Comprehensive scoring output including:
-            - Detailed category scores with breakdowns
-            - Specific strengths and gaps for each category
-            - Industry context and benchmarks
-            - Overall readiness assessment
-            - Priority focus areas with ROI calculations""",
+            expected_output="""A valid JSON object with category_scores, overall_score, readiness_level, and focus_areas. No explanatory text.""",
             context=[intake_task, research_task]
         )
         self.tasks.append(scoring_task)
 
         # Task 4: Summary and Recommendations (GPT-4.1 mini)
+        # CRITICAL FIX: Detailed output structure specification
         summary_task = Task(
             description=f"""
 {self.prompts['summary_agent']['task_template']}
 
-Create comprehensive report sections using:
-- Business info: Industry: {formatted_inputs.get('industry', '')}, Location: {formatted_inputs.get('location', '')}, Exit Timeline: {formatted_inputs.get('exit_timeline', '')}
-- Scoring results from the scoring task (available via context)
-- Research findings from research task (available via context)
+Create comprehensive report sections using the results from previous tasks.
+
+Business info: Industry: {formatted_inputs.get('industry', '')}, Location: {formatted_inputs.get('location', '')}, Exit Timeline: {formatted_inputs.get('exit_timeline', '')}
 
 Use these tools in sequence:
 1. create_executive_summary - for the main summary
@@ -182,57 +202,89 @@ Use these tools in sequence:
 4. create_industry_context - for market positioning
 5. structure_final_report - to organize everything
 
+CRITICAL: Return a valid JSON object with this structure:
+{{
+  "executive_summary": "Your 200-word summary here...",
+  "category_summaries": {{
+    "owner_dependence": "Category analysis...",
+    "revenue_quality": "Category analysis...",
+    ...
+  }},
+  "recommendations": {{
+    "quick_wins": [...],
+    "strategic_priorities": [...],
+    "critical_focus": "..."
+  }},
+  "industry_context": "Market analysis...",
+  "next_steps": "Clear next steps..."
+}}
+
+Return only this JSON structure, no other text.
+
 Locale: {formatted_inputs.get('locale', 'us')}
             """,
             agent=self.agents['summary'],
-            expected_output="""Complete personalized report including:
-            - 200-250 word executive summary
-            - 150-200 word analysis for each category
-            - Quick wins and strategic priorities
-            - Industry context and market positioning
-            - All content ready for client delivery""",
+            expected_output="""A valid JSON object with executive_summary, category_summaries, recommendations, industry_context, and next_steps. All text must be complete and professional. No additional formatting or explanatory text.""",
             context=[scoring_task, research_task, intake_task]
         )
         self.tasks.append(summary_task)
 
         # Task 5: Quality Assurance (GPT-4.1 nano)
+        # CRITICAL FIX: Simple boolean output
         qa_task = Task(
             description=f"""
 {self.prompts['qa_agent']['task_template']}
 
-Validate the complete report from the summary task using:
-1. check_scoring_consistency - verify scores align with justifications
-2. verify_content_quality - check for completeness and clarity
-3. scan_for_pii - ensure no personal information remains
-4. validate_report_structure - confirm all sections present
+Validate the complete report from the summary task using your QA tools:
+1. check_scoring_consistency
+2. verify_content_quality  
+3. scan_for_pii
+4. validate_report_structure
 
-The report content will be available via task context from the summary agent.
+CRITICAL: Return only a JSON object with this structure:
+{{
+  "approved": true,
+  "quality_score": 8.5,
+  "issues": [],
+  "ready_for_delivery": true
+}}
+
+Return only this JSON, no explanation.
             """,
             agent=self.agents['qa'],
-            expected_output="Quality assessment with approval status and any issues identified",
+            expected_output="""A valid JSON object with approved (boolean), quality_score (number), issues (array), and ready_for_delivery (boolean). No explanatory text.""",
             context=[scoring_task, summary_task]
         )
         self.tasks.append(qa_task)
         
         # Task 6: PII Reinsertion and Final Personalization (GPT-4.1 nano)
+        # CRITICAL FIX: Clear final output specification
         pii_reinsertion_task = Task(
             description=f"""
 {self.prompts['pii_reinsertion_agent']['task_template']}
 
-Personalize the final report using:
+Personalize the final report using the UUID and approved content.
+
 UUID: {formatted_inputs.get('uuid', 'unknown')}
 
-Use process_complete_reinsertion tool with the UUID and approved report content from QA task.
+Use process_complete_reinsertion tool with the UUID and report content from previous tasks.
 
-This will automatically:
-- Retrieve stored PII mapping
-- Replace placeholders with actual names/emails
-- Add personal touches
-- Validate final output
-- Structure for delivery
+CRITICAL: Return a valid JSON object with this structure:
+{{
+  "success": true,
+  "content": "Complete personalized report with actual names...",
+  "metadata": {{
+    "owner_name": "Actual Name",
+    "email": "actual@email.com",
+    "validation": {{...}}
+  }}
+}}
+
+The content field must contain the complete, personalized report text.
+Return only this JSON structure.
             """,
             agent=self.agents['pii_reinsertion'],
-            expected_output="Complete personalized report ready for PDF generation with all PII properly reinserted",
+            expected_output="""A valid JSON object with success (boolean), content (complete report text), and metadata (owner details and validation). No additional formatting.""",
             context=[qa_task, summary_task, intake_task]
         )
         self.tasks.append(pii_reinsertion_task)
