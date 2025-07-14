@@ -1,0 +1,220 @@
+(venv) PS C:\Users\liamp\OneDrive\exit-ready-snapshot> python test_summary_node.py
+🧪 Testing Summary Node (4-agent pipeline)
+============================================================
+✅ All nodes imported successfully
+
+1️⃣ Running Intake Node...
+✅ Intake complete - PII mapping created: 4 items
+
+2️⃣ Running Research Node...
+✅ Research complete - Found 0 trends
+
+3️⃣ Running Scoring Node...
+✅ Scoring complete:
+
+- Overall Score: N/A/10
+- Readiness Level: N/A
+
+4️⃣ Running Summary Node...
+
+✅ Summary complete in 0.77s
+
+# 📊 SUMMARY RESULTS:
+
+## 📋 Executive Summary Preview:
+
+EXECUTIVE SUMMARY
+
+Thank you for completing the Exit Ready Snapshot assessment. As a Technology/Software owner in Pacific/Western US with 10-20 years of experience, you're taking an important step toward maximizing your business value.
+
+OVERALL ASSESSMENT: 5.0/10 - Needs Significant Work
+
+Your business needs focused improvements but has clear potential for value enhancement
+
+KEY FINDINGS:
+
+Your Strongest Area: Revenue Stability (7.0/10)
+
+- Established 15+ year track record
+
+Your Biggest Opportuni...
+
+📊 Category Summaries Generated: 5
+
+- financial_performance
+- revenue_stability
+- operations_efficiency
+- growth_value
+- exit_readiness
+
+## 💡 Recommendations Preview:
+
+YOUR PERSONALIZED ACTION PLAN
+
+⚠️ TIMELINE ALERT: 1-2 years
+
+QUICK WINS (NEXT 30 DAYS)
+These high-impact actions can be implemented immediately:
+
+1. Address: Limited financial data provided
+   Category: Financial Performance
+   Impact: Quick improvement opportunity
+
+2. Address: No clear management structure
+   Category: Operations Efficiency
+   Impact: Quick improvement opportunity
+
+3. Address: D...
+
+## 🏭 Industry Context Preview:
+
+INDUSTRY & MARKET CONTEXT
+
+YOUR MARKET: Technology/Software in Pacific/Western US
+REVENUE RANGE: $10M-$25M
+
+CURRENT MARKET CONDITIONS:
+
+Valuation Benchmarks:
+• EBITDA Multiples: 4-6x
+• Revenue Multiples: 1.2-2.0x
+• Premium for 60%+ recurring revenue: 1-2x additional
+
+Buyer Priorities (in order):
+
+1. ...
+
+📄 Final Report Length: 9538 characters
+
+⏱️ Processing Times:
+
+- intake: 3.56s
+- research: 19.15s
+  Your Biggest Opportuni...
+
+📊 Category Summaries Generated: 5
+
+- financial_performance
+- revenue_stability
+- operations_efficiency
+- growth_value
+- exit_readiness
+
+## 💡 Recommendations Preview:
+
+YOUR PERSONALIZED ACTION PLAN
+
+⚠️ TIMELINE ALERT: 1-2 years
+
+QUICK WINS (NEXT 30 DAYS)
+These high-impact actions can be implemented immediately:
+
+1. Address: Limited financial data provided
+   Category: Financial Performance
+   Impact: Quick improvement opportunity
+
+2. Address: No clear management structure
+   Category: Operations Efficiency
+   Impact: Quick improvement opportunity
+
+3. Address: D...
+
+## 🏭 Industry Context Preview:
+
+INDUSTRY & MARKET CONTEXT
+
+YOUR MARKET: Technology/Software in Pacific/Western US
+REVENUE RANGE: $10M-$25M
+
+CURRENT MARKET CONDITIONS:
+
+Valuation Benchmarks:
+• EBITDA Multiples: 4-6x
+• Revenue Multiples: 1.2-2.0x
+• Premium for 60%+ recurring revenue: 1-2x additional
+
+Buyer Priorities (in order):
+
+1. ...
+
+📄 Final Report Length: 9538 characters
+
+⏱️ Processing Times:
+
+- intake: 3.56s
+- research: 19.15s
+- scoring: 0.00s
+- summary: 0.77s
+- TOTAL: 23.48s
+
+🔍 Debug Messages (last 5):
+
+- Research started at 2025-07-14T23:35:31.333919
+- Research completed in 19.15s - Industry: Technology/Software, Data: live
+- Scoring started at 2025-07-14T23:35:50.483380
+- Scoring completed in 0.00s - Overall: 5.4/10 (Conditionally Ready), Focus: financial_performance
+- Summary node completed in 0.77s - Generated executive summary, 5 category analyses, and comprehensive recommendations
+
+✅ 4-AGENT PIPELINE TEST SUCCESSFUL!
+
+💾 Full output saved to: test_output_4agent_summary.json
+(venv) PS C:\Users\liamp\OneDrive\exit-ready-snapshot> python comprehensive_diagnostic.py
+🔍 COMPREHENSIVE PIPELINE DIAGNOSTIC
+============================================================
+
+## 1️⃣ API KEY CHECK:
+
+OpenAI API Key: ✅ Found
+Perplexity API Key: ✅ Found
+
+## 2️⃣ RESEARCH TOOL TEST:
+
+✅ Research appears to be using LIVE Perplexity data
+Research output length: 3145 chars
+Contains 'Success': Yes
+
+## 3️⃣ SCORING FUNCTION TEST:
+
+Financial score: 3.5/10
+Scoring includes adjustments: True
+Strengths found: 1
+Gaps found: 1
+
+## 4️⃣ MINI PIPELINE TEST:
+
+Running intake...
+✅ Intake time: 3.46s
+
+Running research...
+✅ Research time: 18.79s
+
+Running scoring...
+✅ Scoring time: 0.00s
+⚠️ Scoring was too fast - likely using defaults
+
+Scoring Results:
+Overall Score: 5.0
+Readiness Level: Conditionally Ready
+
+Category Scores:
+financial_performance: 3.5
+revenue_stability: 6.5
+operations_efficiency: 5.0
+growth_value: 3.9
+exit_readiness: 6.5
+
+## 5️⃣ QUALITY ANALYSIS:
+
+✅ Scores vary appropriately (avg: 5.1)
+✅ Research is confirmed LIVE data
+✅ Found 3 critical gaps
+
+============================================================
+DIAGNOSTIC COMPLETE
+============================================================
+
+⚠️ ISSUES FOUND:
+
+- Scoring too fast - may be using defaults
+
+Recommendation: Check the detailed output above to verify data quality.

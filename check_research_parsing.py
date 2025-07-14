@@ -14,8 +14,8 @@ load_dotenv()
 
 print("Checking research data parsing...")
 
-# Test the research tool output format
-from src.agents.research_agent import research_industry_trends, analyze_market_position, find_improvement_strategies
+# Test the research tool output format - using ACTUAL functions that exist
+from src.agents.research_agent import research_industry_trends, find_exit_benchmarks, format_research_output
 
 test_data = {
     "industry": "Technology/Software",
@@ -25,12 +25,12 @@ test_data = {
 
 print("\n1. Testing research_industry_trends output:")
 print("-" * 40)
-result1 = research_industry_trends._run(industry_data=json.dumps(test_data))
+result1 = research_industry_trends._run(query=json.dumps(test_data))
 print(f"Output type: {type(result1)}")
 print(f"Output length: {len(result1)}")
 print(f"First 500 chars:\n{result1[:500]}")
-print(f"\nContains 'Status:'? {('Status:' in result1)}")
-print(f"Contains 'RESEARCH COMPLETE'? {('RESEARCH COMPLETE' in result1)}")
+print(f"\nContains 'Research Status:'? {('Research Status:' in result1)}")
+print(f"Contains 'INDUSTRY RESEARCH RESULTS'? {('INDUSTRY RESEARCH RESULTS' in result1)}")
 
 # Check if it's trying to parse as JSON
 print("\n2. Checking if output is JSON:")
@@ -48,27 +48,20 @@ except:
     for i, line in enumerate(lines[:5]):
         print(f"  {i}: {line[:80]}")
 
-print("\n3. Testing analyze_market_position:")
+print("\n3. Testing find_exit_benchmarks:")
 print("-" * 40)
-market_data = {
-    "industry": "Technology/Software",
-    "revenue_range": "$5M-$10M",
-    "location": "Pacific/Western US",
-    "responses": {}
-}
-result2 = analyze_market_position._run(market_data=json.dumps(market_data))
+# This tool expects just an industry string or dict with industry
+result2 = find_exit_benchmarks._run(industry="Technology/Software")
 print(f"Output type: {type(result2)}")
 print(f"First 300 chars:\n{result2[:300]}")
 
-print("\n4. Testing find_improvement_strategies:")
+print("\n4. Testing format_research_output:")
 print("-" * 40)
-assessment_data = {
-    "scores": {"financial_performance": 5.0, "revenue_stability": 5.5},
-    "gaps": ["owner dependence", "low documentation"],
-    "industry": "Technology/Software",
-    "research_insights": {}
+# This tool expects raw research to format
+raw_research = {
+    "raw_content": result1  # Use output from first tool
 }
-result3 = find_improvement_strategies._run(assessment_data=json.dumps(assessment_data))
+result3 = format_research_output._run(raw_research=json.dumps(raw_research))
 print(f"Output type: {type(result3)}")
 print(f"First 300 chars:\n{result3[:300]}")
 
@@ -87,19 +80,25 @@ print("Looking for tool result processing in research_node...")
 # Check if it's expecting JSON
 if "json.loads" in source:
     print("⚠️  Node is trying to parse JSON from tools")
-elif "parse_research_output" in source:
-    print("⚠️  Node uses custom parser")
+elif "parse" in source and "text" in source:
+    print("✓ Node appears to parse text output")
 else:
     print("❓ Not clear how node parses tool output")
 
-# Find how it stores results
-if "industry_trends" in source:
-    lines = source.split('\n')
-    for i, line in enumerate(lines):
-        if "industry_trends" in line and "=" in line:
-            print(f"Found assignment: {line.strip()}")
-            # Check surrounding lines
-            if i > 0:
-                print(f"  Previous: {lines[i-1].strip()}")
-            if i < len(lines)-1:
-                print(f"  Next: {lines[i+1].strip()}")
+# Find how it extracts data
+print("\nChecking data extraction patterns:")
+if "EBITDA multiples:" in source:
+    print("✓ Node looks for 'EBITDA multiples:' pattern")
+if "Revenue multiples:" in source:
+    print("✓ Node looks for 'Revenue multiples:' pattern")
+if "IMPROVEMENT STRATEGIES:" in source:
+    print("✓ Node looks for 'IMPROVEMENT STRATEGIES:' pattern")
+
+# Check how results are stored
+print("\nChecking result storage:")
+if '"structured_findings"' in source:
+    print("✓ Node stores structured_findings")
+if '"trends_analysis"' in source:
+    print("✓ Node stores trends_analysis")
+if '"benchmarks_analysis"' in source:
+    print("✓ Node stores benchmarks_analysis")

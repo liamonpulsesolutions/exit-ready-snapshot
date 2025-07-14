@@ -62,10 +62,15 @@ def summary_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "locale": state.get("locale", "us")
         }
         
-        # Get scoring data
+        # Get scoring data - Extract overall score and readiness from scoring_result directly
         category_scores = scoring_result.get("category_scores", {})
-        overall_results = scoring_result.get("overall_results", {})
         focus_areas = scoring_result.get("focus_areas", {})
+        
+        # CRITICAL FIX: Extract overall score and readiness level from scoring_result
+        overall_score = scoring_result.get("overall_score", 5.0)
+        readiness_level = scoring_result.get("readiness_level", "Needs Significant Work")
+        
+        logger.info(f"Extracted overall score: {overall_score}, readiness: {readiness_level}")
         
         # Initialize LLM for this node
         llm = ChatOpenAI(
@@ -77,8 +82,8 @@ def summary_node(state: Dict[str, Any]) -> Dict[str, Any]:
         # 1. Generate Executive Summary
         logger.info("Generating executive summary...")
         exec_summary_data = {
-            "overall_score": overall_results.get("overall_score", 5.0),
-            "readiness_level": overall_results.get("readiness_level", "Needs Significant Work"),
+            "overall_score": overall_score,
+            "readiness_level": readiness_level,
             "category_scores": category_scores,
             "focus_areas": focus_areas,
             "industry_context": research_result.get("industry_trends", {}),
@@ -123,7 +128,11 @@ def summary_node(state: Dict[str, Any]) -> Dict[str, Any]:
         industry_data = {
             "research_findings": research_result,
             "business_info": business_info,
-            "scores": overall_results
+            "scores": {
+                "overall_score": overall_score,
+                "readiness_level": readiness_level,
+                "category_scores": category_scores
+            }
         }
         
         industry_context_result = create_industry_context._run(
@@ -132,12 +141,16 @@ def summary_node(state: Dict[str, Any]) -> Dict[str, Any]:
         
         # 5. Structure Final Report
         logger.info("Structuring final report...")
+        
+        # CRITICAL FIX: Pass overall score and readiness level explicitly
         complete_data = {
             "executive_summary": exec_summary_result,
             "category_summaries": category_summaries,
             "recommendations": recommendations_result,
             "industry_context": industry_context_result,
-            "business_info": business_info
+            "business_info": business_info,
+            "overall_score": overall_score,  # Add this
+            "readiness_level": readiness_level  # Add this
         }
         
         final_report = structure_final_report._run(
@@ -155,7 +168,10 @@ def summary_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "recommendations": recommendations_result,
             "industry_context": industry_context_result,
             "final_report": final_report,
-            "processing_time": processing_time
+            "processing_time": processing_time,
+            # Include overall results for easy access
+            "overall_score": overall_score,
+            "readiness_level": readiness_level
         }
         
         # Add processing time
