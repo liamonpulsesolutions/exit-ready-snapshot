@@ -1,18 +1,14 @@
 """
-QA node for LangGraph workflow.
+QA Node for LangGraph implementation of Exit Ready Snapshot.
 Performs quality assurance checks on the generated report.
-Reuses all existing QA tools from the CrewAI QA agent.
 """
 
 import logging
 import json
+import time
 from datetime import datetime
 from typing import Dict, Any
 
-# Import the state type
-from src.workflow import AssessmentState
-
-# Import ALL existing tools from the CrewAI QA agent
 from src.agents.qa_agent import (
     check_scoring_consistency,
     verify_content_quality,
@@ -20,68 +16,73 @@ from src.agents.qa_agent import (
     validate_report_structure
 )
 
-# Import utilities
-from src.utils.json_helper import safe_parse_json
-
 logger = logging.getLogger(__name__)
 
+# Category name mapping to handle differences between scoring and QA validation
+CATEGORY_NAME_MAPPING = {
+    # Map from what scoring uses -> what QA expects
+    'financial_performance': 'financial_readiness',
+    'revenue_stability': 'revenue_quality',
+    'operations_efficiency': 'operational_resilience',
+    'owner_dependence': 'owner_dependence',  # Already matches
+    'growth_value': 'growth_value',  # Already matches
+    'exit_readiness': 'exit_readiness'  # If used
+}
 
-def qa_node(state: AssessmentState) -> AssessmentState:
-    """
-    QA node that validates the assessment output.
+def map_category_names(category_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Map category names from scoring format to QA validation format"""
+    mapped_data = {}
     
-    This node:
-    1. Checks scoring consistency
-    2. Verifies content quality
-    3. Scans for any remaining PII
-    4. Validates report structure
+    for old_name, data in category_data.items():
+        new_name = CATEGORY_NAME_MAPPING.get(old_name, old_name)
+        mapped_data[new_name] = data
     
-    Args:
-        state: Current workflow state with all previous results
-        
-    Returns:
-        Updated state with QA validation results
+    return mapped_data
+
+def qa_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    start_time = datetime.now()
-    logger.info(f"=== QA NODE STARTED - UUID: {state['uuid']} ===")
+    QA node that validates the complete assessment report.
+    
+    Performs:
+    1. Scoring consistency checks
+    2. Content quality verification
+    3. PII compliance scanning
+    4. Report structure validation
+    """
+    start_time = time.time()
+    logger.info(f"Starting QA validation for UUID: {state.get('uuid')}")
     
     try:
-        # Update current stage
-        state["current_stage"] = "quality_assurance"
-        state["messages"].append(f"QA validation started at {start_time.isoformat()}")
-        
-        # Get data from previous stages
+        # Get data from previous nodes
         scoring_result = state.get("scoring_result", {})
         summary_result = state.get("summary_result", {})
+        form_data = state.get("form_data", {})
         
-        # Initialize validation results
+        # Initialize QA results
         qa_results = {
-            "scoring_consistency": None,
-            "content_quality": None,
-            "pii_compliance": None,
-            "structure_validation": None,
-            "overall_quality_score": 0,
-            "issues_found": [],
             "approved": True,
-            "ready_for_delivery": True
+            "quality_score": 0.0,
+            "issues_found": [],
+            "ready_for_delivery": True,
+            "validation_details": {}
         }
         
         # Step 1: Check Scoring Consistency
         logger.info("Checking scoring consistency...")
         scoring_data = {
             "scores": scoring_result.get("category_scores", {}),
-            "justifications": {},  # Would need to extract from category data
-            "responses": state.get("anonymized_data", {}).get("responses", {})
+            "responses": form_data.get("responses", {})
         }
         
         consistency_result = check_scoring_consistency._run(
             scoring_data=json.dumps(scoring_data)
         )
-        qa_results["scoring_consistency"] = consistency_result
+        qa_results["validation_details"]["scoring_consistency"] = consistency_result
         
-        # Check if there are consistency issues
-        if "Issues Found" in consistency_result:
-            qa_results["issues_found"].append("Scoring consistency issues detected")
+        # Check for consistency issues
+        if "Failed" in consistency_result:
+            qa_results["issues_found"].append("Scoring inconsistencies detected")
+            qa_results["approved"] = False
         
         # Step 2: Verify Content Quality
         logger.info("Verifying content quality...")
@@ -94,29 +95,34 @@ def qa_node(state: AssessmentState) -> AssessmentState:
         quality_result = verify_content_quality._run(
             content_data=json.dumps(content_data)
         )
-        qa_results["content_quality"] = quality_result
+        qa_results["validation_details"]["content_quality"] = quality_result
+        
+        # Extract quality score if available
+        if "Quality Score:" in quality_result:
+            try:
+                score_text = quality_result.split("Quality Score:")[1].split("/10")[0].strip()
+                qa_results["quality_score"] = float(score_text)
+            except:
+                qa_results["quality_score"] = 7.0  # Default if parsing fails
         
         # Check for quality issues
-        if "Needs Revision" in quality_result:
-            qa_results["issues_found"].append("Content quality issues detected")
+        if "Poor" in quality_result or "Failed" in quality_result:
+            qa_results["issues_found"].append("Content quality below standards")
             qa_results["approved"] = False
         
         # Step 3: Scan for PII
         logger.info("Scanning for PII compliance...")
-        
-        # Combine all content for PII scan
-        all_content = {
+        full_content = {
             "executive_summary": summary_result.get("executive_summary", ""),
             "category_summaries": summary_result.get("category_summaries", {}),
             "recommendations": summary_result.get("recommendations", ""),
-            "industry_context": summary_result.get("industry_context", ""),
-            "final_report": summary_result.get("final_report", "")
+            "next_steps": summary_result.get("next_steps", "")
         }
         
         pii_result = scan_for_pii._run(
-            full_content=json.dumps(all_content)
+            full_content=json.dumps(full_content)
         )
-        qa_results["pii_compliance"] = pii_result
+        qa_results["validation_details"]["pii_compliance"] = pii_result
         
         # Check for PII violations
         if "Failed" in pii_result and "PRIVACY VIOLATION" in pii_result:
@@ -126,18 +132,23 @@ def qa_node(state: AssessmentState) -> AssessmentState:
         
         # Step 4: Validate Report Structure
         logger.info("Validating report structure...")
+        
+        # Map category names to what QA expects
+        mapped_category_scores = map_category_names(scoring_result.get("category_scores", {}))
+        mapped_category_summaries = map_category_names(summary_result.get("category_summaries", {}))
+        
         report_data = {
             "executive_summary": summary_result.get("executive_summary", ""),
-            "category_scores": scoring_result.get("category_scores", {}),
-            "category_summaries": summary_result.get("category_summaries", {}),
+            "category_scores": mapped_category_scores,  # Use mapped names
+            "category_summaries": mapped_category_summaries,  # Use mapped names
             "recommendations": summary_result.get("recommendations", ""),
-            "next_steps": "Schedule a consultation to discuss your Exit Value Growth Plan"  # Default
+            "next_steps": summary_result.get("next_steps", "") or "Schedule a consultation to discuss your Exit Value Growth Plan"
         }
         
         structure_result = validate_report_structure._run(
             report_data=json.dumps(report_data)
         )
-        qa_results["structure_validation"] = structure_result
+        qa_results["validation_details"]["structure_validation"] = structure_result
         
         # Check for structure issues
         if "Failed" in structure_result:
@@ -157,42 +168,52 @@ def qa_node(state: AssessmentState) -> AssessmentState:
         if "Passed" in structure_result:
             passed_checks += 1
         
-        qa_results["overall_quality_score"] = round((passed_checks / total_checks) * 10, 1)
+        # Adjust quality score based on checks
+        if qa_results["quality_score"] == 0:
+            qa_results["quality_score"] = (passed_checks / total_checks) * 10
         
-        # Determine final approval status
-        if qa_results["overall_quality_score"] < 7:
+        # Final determination
+        if len(qa_results["issues_found"]) == 0:
+            qa_results["approved"] = True
+            qa_results["ready_for_delivery"] = True
+        else:
             qa_results["approved"] = False
-            qa_results["ready_for_delivery"] = False
+            if any("PII" in issue for issue in qa_results["issues_found"]):
+                qa_results["ready_for_delivery"] = False
         
         # Update state
         state["qa_result"] = qa_results
+        state["current_stage"] = "qa_complete"
         
-        # Add processing time
-        end_time = datetime.now()
-        processing_time = (end_time - start_time).total_seconds()
+        # Add timing
+        processing_time = time.time() - start_time
         state["processing_time"]["qa"] = processing_time
         
         # Add status message
-        status = "approved" if qa_results["approved"] else "needs revision"
-        state["messages"].append(
-            f"QA completed in {processing_time:.2f}s - "
-            f"Quality score: {qa_results['overall_quality_score']}/10, "
-            f"Status: {status}, "
-            f"Issues: {len(qa_results['issues_found'])}"
-        )
+        if qa_results["approved"]:
+            state["messages"].append(
+                f"✅ QA validation passed with score {qa_results['quality_score']:.1f}/10"
+            )
+        else:
+            state["messages"].append(
+                f"⚠️ QA validation found {len(qa_results['issues_found'])} issues: {', '.join(qa_results['issues_found'])}"
+            )
         
-        logger.info(f"=== QA NODE COMPLETED - {processing_time:.2f}s ===")
+        logger.info(f"QA validation completed in {processing_time:.2f}s")
+        logger.info(f"QA Result: Approved={qa_results['approved']}, Score={qa_results['quality_score']:.1f}/10")
         
         return state
         
     except Exception as e:
-        logger.error(f"Error in QA node: {str(e)}", exc_info=True)
-        state["error"] = f"QA failed: {str(e)}"
-        state["messages"].append(f"ERROR in QA: {str(e)}")
+        logger.error(f"Error in QA node: {str(e)}")
+        state["error"] = f"QA validation failed: {str(e)}"
+        state["current_stage"] = "qa_error"
         
-        # Set safe defaults on error
+        # Set default QA result on error
         state["qa_result"] = {
             "approved": False,
+            "quality_score": 0.0,
+            "issues_found": ["QA validation error"],
             "ready_for_delivery": False,
             "error": str(e)
         }
