@@ -2,6 +2,8 @@
 All LLM prompts consolidated from YAML files and CrewAI agents.
 Pure prompt templates for use in workflow nodes.
 """
+from typing import Dict, Tuple
+
 
 # Research prompts
 RESEARCH_PROMPTS = {
