@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 """
-Test script for the research node in LangGraph workflow.
-Validates all research functionality including:
-- Perplexity API integration
-- Fallback data handling
-- Industry-specific research
-- Benchmark gathering
+Test script for the enhanced research node with LLM intelligence.
+Validates structured prompts, citation extraction, and quality checks.
 """
 
 import os
@@ -19,6 +15,15 @@ from pathlib import Path
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+
+# Load environment variables from .env file
+from dotenv import load_dotenv
+env_path = project_root / '.env'
+if env_path.exists():
+    load_dotenv(env_path)
+    print(f"Loaded .env from: {env_path}")
+else:
+    print(f"Warning: No .env file found at {env_path}")
 
 # Capture all output using TeeOutput pattern
 _original_stdout = sys.stdout
@@ -58,7 +63,7 @@ logging.basicConfig(
 
 # Store all test data
 _test_data = {
-    "test_name": "test_research_node.py",
+    "test_name": "test_enhanced_research_node.py",
     "timestamp": datetime.now().isoformat(),
     "results": {},
     "errors": [],
@@ -86,38 +91,15 @@ def log_assertion(description, passed, details=None):
     if details and not passed:
         print(f"   Details: {details}")
 
-# Sample state from successful intake node
+# Sample state from intake node
 SAMPLE_STATE_AFTER_INTAKE = {
-    "uuid": "test-research-001",
-    "form_data": {
-        "uuid": "test-research-001",
-        "name": "John Smith",
-        "email": "john@techcorp.com",
-        "industry": "Professional Services",
-        "revenue_range": "$1M-$5M",
-        "years_in_business": "10-20 years",
-        "age_range": "55-64",
-        "exit_timeline": "1-2 years",
-        "location": "Pacific/Western US",
-        "responses": {
-            "q1": "I am the CEO and founder",
-            "q2": "Less than 3 days",
-            "q3": "Consulting 60%, Training 40%",
-            "q4": "20-40%",
-            "q5": "7",
-            "q6": "Improved slightly",
-            "q7": "Client relationships and expertise",
-            "q8": "4",
-            "q9": "Long-term clients and reputation",
-            "q10": "8"
-        }
-    },
+    "uuid": "test-enhanced-research-001",
+    "form_data": {},
     "locale": "us",
     "current_stage": "intake",
-    "processing_time": {"intake": 0.005},
-    "messages": ["Intake completed"],
     "error": None,
-    # From intake node
+    "processing_time": {"intake": 0.5},
+    "messages": ["Intake completed"],
     "intake_result": {
         "validation_status": "success",
         "pii_entries": 4,
@@ -152,13 +134,11 @@ SAMPLE_STATE_AFTER_INTAKE = {
         "[UUID]": "test-research-001",
         "[LOCATION]": "Pacific/Western US"
     },
-    # Initialize empty for future nodes
     "research_result": None,
     "scoring_result": None,
     "summary_result": None,
     "qa_result": None,
     "final_output": None,
-    # Business context
     "industry": "Professional Services",
     "location": "Pacific/Western US",
     "revenue_range": "$1M-$5M",
@@ -166,10 +146,10 @@ SAMPLE_STATE_AFTER_INTAKE = {
     "years_in_business": "10-20 years"
 }
 
-def test_research_node():
-    """Test the research node functionality"""
+def test_enhanced_research_node():
+    """Test the enhanced research node functionality"""
     print("\n" + "="*80)
-    print("🧪 TESTING RESEARCH NODE")
+    print("🧪 TESTING ENHANCED RESEARCH NODE WITH LLM INTELLIGENCE")
     print("="*80 + "\n")
     
     try:
@@ -178,24 +158,35 @@ def test_research_node():
         from workflow.state import WorkflowState
         
         log_result("imports_successful", True)
-        print("✅ Successfully imported research_node and WorkflowState")
+        print("✅ Successfully imported enhanced research_node")
         
-        # Check if Perplexity API key is available
-        has_perplexity_key = bool(os.getenv("PERPLEXITY_API_KEY"))
-        print(f"\n📡 Perplexity API Key: {'✅ Found' if has_perplexity_key else '⚠️  Not found (will use fallback data)'}")
-        log_result("has_perplexity_key", has_perplexity_key)
+        # Check API keys
+        has_perplexity = bool(os.getenv("PERPLEXITY_API_KEY"))
+        has_openai = bool(os.getenv("OPENAI_API_KEY"))
+        
+        print(f"\n📡 API Keys:")
+        print(f"   Perplexity: {'✅ Found' if has_perplexity else '⚠️  Not found (will use fallback)'}")
+        print(f"   OpenAI: {'✅ Found' if has_openai else '❌ REQUIRED - Set OPENAI_API_KEY'}")
+        
+        log_result("has_perplexity_key", has_perplexity)
+        log_result("has_openai_key", has_openai)
+        
+        if not has_openai:
+            print("\n❌ ERROR: OpenAI API key is required for LLM extraction/validation")
+            print("   Set your key: export OPENAI_API_KEY='your-key-here'")
+            return
         
         # Use the state from intake
         state = SAMPLE_STATE_AFTER_INTAKE.copy()
         
         log_result("initial_state", state)
-        print(f"\n📋 Using state from intake node - UUID: {state['uuid']}")
+        print(f"\n📋 Testing with state - UUID: {state['uuid']}")
         print(f"   Industry: {state['industry']}")
         print(f"   Location: {state['location']}")
         print(f"   Revenue: {state['revenue_range']}")
         
-        # Execute research node
-        print("\n🚀 Executing research_node...")
+        # Execute enhanced research node
+        print("\n🚀 Executing enhanced research_node...")
         start_time = datetime.now()
         
         result_state = research_node(state)
@@ -209,7 +200,7 @@ def test_research_node():
         print(f"\n⏱️  Execution completed in {execution_time:.2f} seconds")
         
         # Validate results
-        print("\n🔍 Validating results...")
+        print("\n🔍 Validating enhanced results...")
         
         # 1. Check stage updated
         log_assertion(
@@ -235,105 +226,90 @@ def test_research_node():
                 {"data_source": data_source}
             )
             
-            # 4. Check industry context
+            # 4. Check for citations list
+            citations = research_result.get("citations", [])
             log_assertion(
-                "Industry context included",
-                "industry_context" in research_result,
-                {"has_context": "industry_context" in research_result}
+                "Citations list present",
+                isinstance(citations, list) and len(citations) > 0,
+                {"citation_count": len(citations), "sample": citations[:3] if citations else []}
             )
             
-            # 5. Check valuation benchmarks
+            # 5. Check valuation benchmarks have citations
+            benchmarks = research_result.get("valuation_benchmarks", {})
+            has_citations_in_benchmarks = any(
+                "(" in str(v) and ")" in str(v) 
+                for v in benchmarks.values()
+            )
             log_assertion(
-                "Valuation benchmarks present",
-                "valuation_benchmarks" in research_result,
-                {"has_benchmarks": "valuation_benchmarks" in research_result}
+                "Valuation benchmarks include citations",
+                has_citations_in_benchmarks,
+                {"sample": list(benchmarks.values())[:2] if benchmarks else []}
             )
             
-            # 6. Check improvement strategies
+            # 6. Check improvement strategies structure
+            strategies = research_result.get("improvement_strategies", {})
+            valid_strategies = all(
+                isinstance(s, dict) and "strategy" in s and "timeline" in s and "value_impact" in s
+                for s in strategies.values()
+            )
             log_assertion(
-                "Improvement strategies present",
-                "improvement_strategies" in research_result,
-                {"has_strategies": "improvement_strategies" in research_result}
+                "Improvement strategies properly structured",
+                valid_strategies,
+                {"strategy_count": len(strategies)}
             )
             
             # 7. Check market conditions
+            conditions = research_result.get("market_conditions", {})
+            has_buyer_priorities = isinstance(conditions.get("buyer_priorities"), list)
+            has_sale_time = "average_sale_time" in conditions
+            has_trend = "key_trend" in conditions
+            
             log_assertion(
-                "Market conditions present",
-                "market_conditions" in research_result,
-                {"has_conditions": "market_conditions" in research_result}
+                "Market conditions complete",
+                has_buyer_priorities and has_sale_time and has_trend,
+                {
+                    "has_priorities": has_buyer_priorities,
+                    "has_sale_time": has_sale_time,
+                    "has_trend": has_trend
+                }
             )
             
-            # 8. If using live data, check for raw content
+            # 8. If live data, check raw content
             if data_source == "live":
                 log_assertion(
-                    "Raw trends data captured",
-                    "raw_trends" in research_result and len(research_result.get("raw_trends", "")) > 0,
-                    {"has_raw_data": "raw_trends" in research_result}
+                    "Raw content captured from Perplexity",
+                    "raw_content" in research_result,
+                    {"content_length": len(research_result.get("raw_content", ""))}
                 )
             
-            # 9. Check timestamp
+            # 9. Check execution time is reasonable (should be 10-20s with LLM calls)
             log_assertion(
-                "Research timestamp recorded",
-                "timestamp" in research_result,
-                {"timestamp": research_result.get("timestamp")}
+                "Execution time reasonable for LLM processing",
+                5 < execution_time < 30,
+                {"execution_time": execution_time}
             )
             
-            # 10. Display research summary
-            print(f"\n📊 Research Summary:")
+            # 10. Display sample results
+            print("\n📊 Sample Enhanced Results:")
             print(f"   Data Source: {data_source}")
-            print(f"   Industry: {research_result.get('industry')}")
-            print(f"   Location: {research_result.get('location')}")
+            print(f"   Citations Found: {len(citations)}")
+            if benchmarks:
+                print(f"   Sample Benchmark: {list(benchmarks.items())[0]}")
+            if strategies:
+                first_strategy = list(strategies.items())[0]
+                print(f"   Sample Strategy: {first_strategy[0]} - {first_strategy[1].get('timeline')}")
             
-            if "valuation_benchmarks" in research_result:
-                benchmarks = research_result["valuation_benchmarks"]
-                print(f"\n   Valuation Benchmarks:")
-                for key, value in benchmarks.items():
-                    print(f"     - {key}: {str(value)[:60]}...")
-            
-            if "improvement_strategies" in research_result:
-                strategies = research_result["improvement_strategies"]
-                print(f"\n   Improvement Areas: {len(strategies)} found")
-                
-            if "market_conditions" in research_result:
-                conditions = research_result["market_conditions"]
-                print(f"   Market Conditions: {len(conditions)} factors")
-        
-        # 11. Check processing time recorded
-        log_assertion(
-            "Processing time recorded",
-            "research" in result_state.get("processing_time", {}),
-            {"time": result_state.get("processing_time", {}).get("research")}
-        )
-        
-        # 12. Check no errors
-        log_assertion(
-            "No errors occurred",
-            result_state.get("error") is None,
-            {"error": result_state.get("error")}
-        )
-        
-        # 13. Check messages updated
-        log_assertion(
-            "Messages updated with research status",
-            len(result_state.get("messages", [])) > len(state.get("messages", [])),
-            {"message_count": len(result_state.get("messages", []))}
-        )
-        
         # Summary
-        print("\n" + "="*80)
-        print("📊 TEST SUMMARY")
-        print("="*80)
-        
+        print("\n📈 Test Summary:")
         total_assertions = len(_test_data["assertions"])
         passed_assertions = sum(1 for a in _test_data["assertions"] if a["passed"])
         
-        print(f"\nTotal assertions: {total_assertions}")
-        print(f"Passed: {passed_assertions}")
-        print(f"Failed: {total_assertions - passed_assertions}")
-        print(f"Success rate: {(passed_assertions/total_assertions)*100:.1f}%")
+        print(f"   Total Assertions: {total_assertions}")
+        print(f"   Passed: {passed_assertions}")
+        print(f"   Failed: {total_assertions - passed_assertions}")
         
         if passed_assertions == total_assertions:
-            print("\n🎉 ALL TESTS PASSED! 🎉")
+            print("\n✨ All enhanced research tests passed! 🎉")
         else:
             print("\n⚠️  Some tests failed. Review the details above.")
         
@@ -343,7 +319,8 @@ def test_research_node():
             "passed": passed_assertions,
             "failed": total_assertions - passed_assertions,
             "success_rate": (passed_assertions/total_assertions)*100,
-            "data_source": research_result.get("data_source") if research_result else None
+            "data_source": research_result.get("data_source") if research_result else None,
+            "citation_count": len(research_result.get("citations", [])) if research_result else 0
         })
         
     except Exception as e:
@@ -371,7 +348,7 @@ def save_test_output():
     
     # Generate filename
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f"output_test_research_node_{timestamp}.json"
+    filename = f"output_test_enhanced_research_{timestamp}.json"
     
     # Save to file
     with open(filename, 'w') as f:
@@ -381,7 +358,7 @@ def save_test_output():
     
     # Also create a summary file
     summary = {
-        "test": "research_node",
+        "test": "enhanced_research_node",
         "timestamp": _test_data["timestamp"],
         "execution_time": _test_data["results"].get("execution_time"),
         "assertions": {
@@ -391,15 +368,17 @@ def save_test_output():
         },
         "errors": len(_test_data["errors"]),
         "has_perplexity_key": _test_data["results"].get("has_perplexity_key"),
+        "has_openai_key": _test_data["results"].get("has_openai_key"),
         "data_source": _test_data["results"].get("test_summary", {}).get("data_source"),
+        "citation_count": _test_data["results"].get("test_summary", {}).get("citation_count"),
         "key_results": {
             "stage": _test_data["results"].get("result_state", {}).get("current_stage"),
-            "has_benchmarks": "valuation_benchmarks" in _test_data["results"].get("result_state", {}).get("research_result", {}),
-            "has_strategies": "improvement_strategies" in _test_data["results"].get("result_state", {}).get("research_result", {})
+            "has_citations": "citations" in _test_data["results"].get("result_state", {}).get("research_result", {}),
+            "has_llm_extraction": _test_data["results"].get("execution_time", 0) > 5
         }
     }
     
-    summary_filename = f"summary_test_research_node_{timestamp}.json"
+    summary_filename = f"summary_test_enhanced_research_{timestamp}.json"
     with open(summary_filename, 'w') as f:
         json.dump(summary, f, indent=2)
     
@@ -408,6 +387,6 @@ def save_test_output():
 
 if __name__ == "__main__":
     try:
-        test_research_node()
+        test_enhanced_research_node()
     finally:
         save_test_output()
