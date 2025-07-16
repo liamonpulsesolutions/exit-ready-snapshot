@@ -134,7 +134,7 @@ def qa_node(state: WorkflowState) -> WorkflowState:
         if tone_check.get("tone_score", 10) < 4:
             qa_warnings.append(f"Tone inconsistency detected (score: {tone_check.get('tone_score')}/10)")
         
-        # Verify Citations (NEW LLM CHECK)
+        # Verify Citations (FIXED to handle both string and dict formats)
         logger.info("Verifying citations and statistical claims...")
         research_result = state.get("research_result", {})
         citation_check = verify_citations_llm(
@@ -180,13 +180,13 @@ def qa_node(state: WorkflowState) -> WorkflowState:
             # Fix critical issues with LLM
             if critical_issues or overall_quality_score < 5.0:
                 fixed_sections = fix_quality_issues_llm(
-                    issues=critical_issues if critical_issues else qa_issues,
-                    warnings=qa_warnings,
-                    summary_result=summary_result,
-                    scoring_result=scoring_result,
-                    redundancy_info=redundancy_check,
-                    tone_info=tone_check,
-                    qa_llm=qa_llm
+                    critical_issues if critical_issues else qa_issues,
+                    qa_warnings,
+                    summary_result,
+                    scoring_result,
+                    redundancy_check,
+                    tone_check,
+                    qa_llm
                 )
                 
                 # Update summary result with fixes
@@ -202,11 +202,12 @@ def qa_node(state: WorkflowState) -> WorkflowState:
                     )
                 
                 # Re-run critical checks
-                content_quality = content_quality_check._run(
-                    executive_summary=summary_result.get("executive_summary", ""),
-                    recommendations=json.dumps(summary_result.get("recommendations", {}))
-                )
-                quality_scores["content_quality"] = content_quality
+                content_quality_check = validate_content_quality({
+                    "executive_summary": summary_result.get("executive_summary", ""),
+                    "recommendations": summary_result.get("recommendations", {}),
+                    "category_summaries": summary_result.get("category_summaries", {})
+                })
+                quality_scores["content_quality"] = content_quality_check
                 
                 redundancy_check = check_redundancy_llm(
                     summary_result.get("final_report", ""),
@@ -235,14 +236,14 @@ def qa_node(state: WorkflowState) -> WorkflowState:
                 qa_warnings = []
                 critical_issues = []
                 
-                if not content_quality.get("passed", True):
-                    issues = content_quality.get("issues", [])
+                if not content_quality_check.get("passed", True):
+                    issues = content_quality_check.get("issues", [])
                     for issue in issues:
                         if "CRITICAL" in issue or "missing" in issue.lower():
                             critical_issues.append(issue)
                         else:
                             qa_issues.append(issue)
-                qa_warnings.extend(content_quality.get("warnings", []))
+                qa_warnings.extend(content_quality_check.get("warnings", []))
                 
                 # Apply adjusted thresholds
                 report_word_count = len(summary_result.get("final_report", "").split())
@@ -527,9 +528,19 @@ Only flag major tone shifts that disrupt the reading experience."""
 def verify_citations_llm(report: str, research_data: Dict[str, Any], llm: ChatOpenAI) -> Dict[str, Any]:
     """Verify that statistical claims and data points are properly cited"""
     
-    # Extract research citations if available
+    # FIXED: Handle both string and dict citation formats
     citations = research_data.get("citations", [])
-    citation_text = "\n".join([f"- {c.get('title', '')}: {c.get('summary', '')}" for c in citations[:10]])
+    
+    if not citations:
+        citation_text = "No citations available"
+    elif isinstance(citations[0], str):
+        # Citations are strings (from enhanced research node)
+        citation_text = "\n".join([f"- {c}" for c in citations[:10]])
+    elif isinstance(citations[0], dict):
+        # Citations are dicts (legacy format)
+        citation_text = "\n".join([f"- {c.get('title', '')}: {c.get('summary', '')}" for c in citations[:10]])
+    else:
+        citation_text = "No citations available"
     
     # Common business knowledge that doesn't need citations
     uncited_whitelist_phrases = [
@@ -750,24 +761,43 @@ def regenerate_final_report(summary_result: Dict[str, Any], overall_score: float
     if summary_result.get("category_summaries"):
         report_parts.append("\n## Detailed Assessment by Category\n")
         
-        category_order = ["financial_readiness", "revenue_quality", "operational_resilience"]
-        for category in category_order:
-            if category in summary_result["category_summaries"]:
-                category_title = category.replace("_", " ").title()
-                report_parts.append(f"\n### {category_title}\n")
-                report_parts.append(summary_result["category_summaries"][category])
-                report_parts.append("\n")
+        # Handle both string and dict formats
+        category_summaries = summary_result.get("category_summaries")
+        if isinstance(category_summaries, str):
+            # If it's a string, just add it directly
+            report_parts.append(category_summaries)
+            report_parts.append("\n")
+        elif isinstance(category_summaries, dict):
+            # If it's a dict, iterate through categories
+            category_order = ["financial_readiness", "revenue_quality", "operational_resilience"]
+            for category in category_order:
+                if category in category_summaries:
+                    category_title = category.replace("_", " ").title()
+                    report_parts.append(f"\n### {category_title}\n")
+                    report_parts.append(category_summaries[category])
+                    report_parts.append("\n")
     
     # Recommendations
     if summary_result.get("recommendations"):
         report_parts.append("\n## Strategic Recommendations\n")
         
-        for category, recs in summary_result["recommendations"].items():
-            if recs:
-                category_title = category.replace("_", " ").title()
-                report_parts.append(f"\n### {category_title}\n")
-                for i, rec in enumerate(recs, 1):
-                    report_parts.append(f"{i}. {rec}\n")
+        # Handle both string and dict formats
+        recommendations = summary_result.get("recommendations")
+        if isinstance(recommendations, str):
+            # If it's a string, just add it directly
+            report_parts.append(recommendations)
+            report_parts.append("\n")
+        elif isinstance(recommendations, dict):
+            # If it's a dict, iterate through categories
+            for category, recs in recommendations.items():
+                if recs:
+                    category_title = category.replace("_", " ").title()
+                    report_parts.append(f"\n### {category_title}\n")
+                    if isinstance(recs, list):
+                        for i, rec in enumerate(recs, 1):
+                            report_parts.append(f"{i}. {rec}\n")
+                    else:
+                        report_parts.append(f"{recs}\n")
     
     # Next Steps
     if summary_result.get("next_steps"):

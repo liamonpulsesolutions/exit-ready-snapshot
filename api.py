@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import re
 
 # Import LangGraph workflow instead of CrewAI
 from workflow.graph import process_assessment_async
@@ -118,57 +119,53 @@ async def process_assessment(
     api_key: str = Depends(verify_api_key)
 ):
     """
-    Process an Exit Ready Snapshot assessment using LangGraph
+    Process an Exit Ready Snapshot assessment using LangGraph workflow.
+    
+    This endpoint:
+    1. Receives form data from n8n webhook
+    2. Processes it through the LangGraph workflow
+    3. Returns structured assessment results
     """
     request_start_time = time.time()
     
-    print("\n" + "="*80)
-    print(f"🌐 NEW API REQUEST RECEIVED - {datetime.now().strftime('%H:%M:%S')}")
-    print("="*80)
-    print(f"📧 Request UUID: {request.uuid}")
-    print(f"👤 Client: {request.name} ({request.email})")
-    print(f"🏢 Industry: {request.industry}")
+    logger.info(f"Received assessment request for UUID: {request.uuid}")
+    print(f"\n" + "="*80)
+    print(f"📥 NEW ASSESSMENT REQUEST - UUID: {request.uuid}")
+    print(f"👤 Business: {request.industry} / {request.revenue_range}")
     print(f"📍 Location: {request.location}")
-    print(f"⏰ Exit Timeline: {request.exit_timeline}")
+    print(f"⏱️  Exit Timeline: {request.exit_timeline}")
     print(f"📊 Responses: {len(request.responses)} questions answered")
     print("="*80)
     
     try:
-        logger.info(f"Processing assessment for UUID: {request.uuid}")
-        logger.info(f"Request data: {json.dumps(request.model_dump(), indent=2)}")
+        # Convert request to dictionary for workflow
+        form_data = request.dict()
         
-        # Convert request to dict for LangGraph
-        form_data = request.model_dump()
+        # Log the request data for debugging
+        logger.debug(f"Form data: {json.dumps(form_data, indent=2)}")
         
-        # Add company name if available from responses
-        if not form_data.get("company_name"):
-            # Try to extract from responses if available
-            form_data["company_name"] = form_data.get("responses", {}).get("company_name", "")
+        # Check for required environment variables
+        if not os.getenv("OPENAI_API_KEY"):
+            print("⚠️  WARNING: No OpenAI API key found!")
+            logger.error("Missing OPENAI_API_KEY")
+            raise HTTPException(
+                status_code=500,
+                detail="Server configuration error: Missing API keys"
+            )
         
-        print(f"📋 Form data prepared: {len(json.dumps(form_data))} chars")
-        print("🤖 Initializing LangGraph workflow...")
-        
+        # Process through LangGraph workflow
+        print(f"\n🔄 Starting LangGraph workflow processing...")
         workflow_start = time.time()
         
-        # Run the async workflow
-        try:
-            # Try to get the current event loop
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We're in an async context, use run_in_executor
-                future = loop.run_in_executor(
-                    executor,
-                    asyncio.run,
-                    process_assessment_async(form_data)
-                )
-                result = await future
-            else:
-                # No running loop, we can use asyncio.run directly
-                result = await process_assessment_async(form_data)
-        except RuntimeError:
-            # Fallback: create new event loop in thread
+        # Execute assessment using async workflow
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # We're already in an async context
             future = executor.submit(asyncio.run, process_assessment_async(form_data))
             result = await asyncio.get_event_loop().run_in_executor(None, future.result)
+        else:
+            # No running loop, we can use asyncio.run directly
+            result = await process_assessment_async(form_data)
         
         workflow_time = time.time() - workflow_start
         print(f"✅ LangGraph workflow completed in {workflow_time:.1f}s")
@@ -180,6 +177,73 @@ async def process_assessment(
                 status_code=500,
                 detail=f"Assessment processing failed: {result.get('error')}"
             )
+        
+        # Format recommendations correctly
+        recommendations = result.get("recommendations", {})
+        if isinstance(recommendations, str):
+            # If recommendations is a string, parse it into a structured format
+            recommendations_dict = {
+                "quick_wins": [],
+                "strategic_priorities": [],
+                "critical_focus": ""
+            }
+            
+            # Try to extract sections if they exist in the string
+            if "QUICK WINS" in recommendations:
+                parts = recommendations.split("QUICK WINS")
+                if len(parts) > 1:
+                    quick_wins_section = parts[1].split("STRATEGIC PRIORITIES")[0] if "STRATEGIC PRIORITIES" in parts[1] else parts[1]
+                    # Extract numbered items
+                    items = re.findall(r'\d+\.\s*([^\n]+)', quick_wins_section)
+                    recommendations_dict["quick_wins"] = items[:3] if items else ["Review this report with your team", "Focus on primary improvement area", "Schedule follow-up consultation"]
+            
+            if "STRATEGIC PRIORITIES" in recommendations:
+                parts = recommendations.split("STRATEGIC PRIORITIES")
+                if len(parts) > 1:
+                    strategic_section = parts[1].split("CRITICAL FOCUS")[0] if "CRITICAL FOCUS" in parts[1] else parts[1]
+                    items = re.findall(r'\d+\.\s*([^\n]+)', strategic_section)
+                    recommendations_dict["strategic_priorities"] = items[:3] if items else ["Develop long-term improvement plan", "Address key value gaps", "Build exit readiness systematically"]
+            
+            if "CRITICAL FOCUS" in recommendations:
+                parts = recommendations.split("CRITICAL FOCUS")
+                if len(parts) > 1:
+                    critical_text = parts[1].strip()
+                    # Get first paragraph or sentence
+                    recommendations_dict["critical_focus"] = critical_text.split('\n')[0].strip() if critical_text else "Focus on your highest impact improvement area"
+            
+            # If parsing didn't work, provide defaults
+            if not any([recommendations_dict["quick_wins"], recommendations_dict["strategic_priorities"], recommendations_dict["critical_focus"]]):
+                recommendations_dict = {
+                    "quick_wins": ["Review assessment findings", "Identify immediate improvements", "Begin documentation"],
+                    "strategic_priorities": ["Reduce owner dependence", "Improve financial systems", "Enhance operational efficiency"],
+                    "critical_focus": recommendations[:200] + "..." if len(recommendations) > 200 else recommendations
+                }
+            
+            recommendations = recommendations_dict
+        elif not isinstance(recommendations, dict):
+            # Fallback for any other format
+            recommendations = {
+                "quick_wins": ["Review assessment findings", "Identify immediate improvements", "Begin documentation"],
+                "strategic_priorities": ["Reduce owner dependence", "Improve financial systems", "Enhance operational efficiency"],
+                "critical_focus": "Focus on addressing your primary value gaps"
+            }
+        
+        # Ensure category_summaries is also a dict
+        category_summaries = result.get("category_summaries", {})
+        if isinstance(category_summaries, str):
+            # Create a dict with proper categories
+            category_summaries = {
+                "financial_readiness": "Financial performance analysis not available",
+                "revenue_quality": "Revenue quality analysis not available",
+                "operational_resilience": "Operational analysis not available",
+                "overall_summary": category_summaries  # Store the original string
+            }
+        elif not isinstance(category_summaries, dict):
+            category_summaries = {
+                "financial_readiness": "Financial performance analysis pending",
+                "revenue_quality": "Revenue quality analysis pending", 
+                "operational_resilience": "Operational analysis pending"
+            }
         
         # Format response to match existing API contract
         response_data = {
@@ -193,8 +257,8 @@ async def process_assessment(
             "locale": result.get("locale", "us"),
             "scores": result.get("scores", {}),
             "executive_summary": result.get("executive_summary", ""),
-            "category_summaries": result.get("category_summaries", {}),
-            "recommendations": result.get("recommendations", {}),
+            "category_summaries": category_summaries,  # Now guaranteed to be a dict
+            "recommendations": recommendations,  # Now guaranteed to be a dict
             "next_steps": result.get("next_steps", "Schedule a consultation to discuss your personalized Exit Value Growth Plan.")
         }
         

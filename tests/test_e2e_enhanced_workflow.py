@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-End-to-End test of the complete enhanced LangGraph workflow.
+End-to-end test for enhanced LangGraph workflow.
 Tests all nodes with LLM intelligence working together.
 """
 
@@ -102,126 +102,89 @@ SAMPLE_FORM_DATA = {
     "exit_timeline": "1-2 years",
     "age_range": "55-64",
     "responses": {
-        "q1": "Quality control final sign-offs for our largest automotive client - they require my personal certification on all batches due to safety requirements. 2) Pricing decisions and contract negotiations for orders over $50K - I have the cost knowledge and supplier relationships to ensure we maintain proper margins while staying competitive",
-        "q2": "3-7 days",
-        "q3": "Custom metal fabrication for automotive suppliers - about 70% of revenue. Long-term contracts with 4 main clients, typically 2-3 year agreements. 2) Specialty food processing equipment manufacturing - about 20% of revenue. Higher margin custom orders, usually $25K-$100K each. Remaining 10% is maintenance and repair services for existing equipment",
-        "q4": "60-80%",
+        "q1": "Quality control final sign-offs for our largest automotive client - they require my personal certification on all batches due to safety requirements.",
+        "q2": "70-80%",
+        "q3": "Automotive parts manufacturing (60%), Custom fabrication services (30%), Equipment maintenance contracts (10%)",
+        "q4": "40-60%",
         "q5": "6",
-        "q6": "Stayed flat",
-        "q7": "Programming and setup of our CNC machines - Tom has 15 years experience with our specific equipment and knows every client's custom specifications by heart. 2) Supplier relationships and materials procurement - Jennifer manages all vendor relationships and knows which suppliers can deliver quality materials on tight deadlines at the best prices.",
-        "q8": "8",
-        "q9": "ISO 9001 and AS9100 aerospace certifications that took 3 years and $200K+ to achieve - only 12 companies in our region have both certifications, creating significant competitive moat for aerospace and automotive work. 2) $2M in specialized equipment including a rare 5-axis CNC machine that can handle parts our competitors can't manufacture. This equipment is fully paid off and would cost $3M+ to replace today, giving us 25-30% better margins on complex jobs",
-        "q10": "4"
-    },
-    "_tallySubmissionId": "test-e2e-enhanced-001",
-    "_tallyFormId": "3100Y4",
-    "_tallyResponseId": "test-e2e-enhanced-001"
+        "q6": "$10M-$20M annual revenue",
+        "q7": "Major disruption - production would halt within days",
+        "q8": "Partial documentation exists but scattered across different systems",
+        "q9": "Declining due to supply chain costs and overseas competition",
+        "q10": "Our precision quality standards and 30-year reputation with automotive OEMs"
+    }
 }
 
+
 async def test_e2e_enhanced_workflow():
-    """Test the complete enhanced workflow end-to-end"""
+    """Test the complete enhanced workflow with all LLM improvements"""
     print("\n" + "="*80)
-    print("🚀 TESTING END-TO-END ENHANCED LANGGRAPH WORKFLOW")
+    print("🧪 TESTING END-TO-END ENHANCED LANGGRAPH WORKFLOW")
     print("="*80 + "\n")
     
     try:
-        # Import workflow components
-        from workflow.graph import process_assessment_async
-        from workflow.core.pii_handler import store_pii_mapping
-        
-        log_result("imports_successful", True)
-        print("✅ Successfully imported LangGraph workflow")
-        
-        # Check required API keys
+        # Check environment
         has_openai = bool(os.getenv("OPENAI_API_KEY"))
         has_perplexity = bool(os.getenv("PERPLEXITY_API_KEY"))
-        
-        print(f"\n📡 API Keys Status:")
-        print(f"   OpenAI: {'✅ Found' if has_openai else '❌ REQUIRED'}")
-        print(f"   Perplexity: {'✅ Found' if has_perplexity else '⚠️  Optional (will use fallback)'}")
         
         log_result("has_openai_key", has_openai)
         log_result("has_perplexity_key", has_perplexity)
         
+        print("📡 API Keys Status:")
+        print(f"   OpenAI: {'✅ Found' if has_openai else '❌ Missing'}")
+        print(f"   Perplexity: {'✅ Found' if has_perplexity else '❌ Missing'}")
+        
         if not has_openai:
-            print("\n❌ ERROR: OpenAI API key is required for enhanced workflow")
+            print("\n❌ Cannot run test without OpenAI API key")
             return
         
-        # CRITICAL: Store PII mapping for the test UUID
-        # This simulates what the intake node would do
+        # Store PII mapping for test UUID
+        from workflow.core.pii_handler import store_pii_mapping
         test_pii_mapping = {
             "[OWNER_NAME]": SAMPLE_FORM_DATA["name"],
             "[EMAIL]": SAMPLE_FORM_DATA["email"],
-            "[LOCATION]": SAMPLE_FORM_DATA["location"],
-            "[UUID]": SAMPLE_FORM_DATA["uuid"]
+            "[COMPANY_NAME]": "Test Manufacturing Co",
+            "[COMPANY]": "Test Manufacturing Co",
+            "[INDUSTRY]": SAMPLE_FORM_DATA["industry"],
+            "[LOCATION]": SAMPLE_FORM_DATA["location"]
         }
-        
-        # Check responses for company name mentions
-        all_responses = " ".join(str(v) for v in SAMPLE_FORM_DATA.get("responses", {}).values())
-        # Look for patterns like "our automotive client", "Tom", "Jennifer" (employee names)
-        if "Tom" in all_responses:
-            test_pii_mapping["[EMPLOYEE_1]"] = "Tom"
-        if "Jennifer" in all_responses:
-            test_pii_mapping["[EMPLOYEE_2]"] = "Jennifer"
-            
         store_pii_mapping(SAMPLE_FORM_DATA["uuid"], test_pii_mapping)
         print(f"\n📝 Stored test PII mapping for UUID: {SAMPLE_FORM_DATA['uuid']}")
         print(f"   Mapping entries: {len(test_pii_mapping)}")
         
-        # Prepare initial state with simulated intake results
-        # This is what the intake node would have produced
-        anonymized_responses = {}
-        for q_id, response in SAMPLE_FORM_DATA.get("responses", {}).items():
-            # Anonymize the responses
-            anonymized_response = response
-            # Replace owner name
-            if SAMPLE_FORM_DATA["name"] in response:
-                anonymized_response = anonymized_response.replace(SAMPLE_FORM_DATA["name"], "[OWNER_NAME]")
-            # Replace email
-            if SAMPLE_FORM_DATA["email"] in response:
-                anonymized_response = anonymized_response.replace(SAMPLE_FORM_DATA["email"], "[EMAIL]")
-            # Replace employee names
-            if "Tom" in response:
-                anonymized_response = anonymized_response.replace("Tom", "[EMPLOYEE_1]")
-            if "Jennifer" in response:
-                anonymized_response = anonymized_response.replace("Jennifer", "[EMPLOYEE_2]")
-            anonymized_responses[q_id] = anonymized_response
-        
+        # Create initial state simulating intake completion
         initial_state = {
-            "uuid": SAMPLE_FORM_DATA.get("uuid", "unknown"),
+            "uuid": SAMPLE_FORM_DATA["uuid"],
             "form_data": SAMPLE_FORM_DATA,
             "locale": "us",
-            "current_stage": "intake",
+            "current_stage": "intake_complete",
+            "error": None,
             "processing_time": {"intake": 0.5},
-            "messages": ["Assessment started", "Intake completed"],
-            # Add all the data that intake node would have added
-            "intake_result": {
-                "validation_status": "success",
-                "pii_entries": len(test_pii_mapping),
-                "crm_logged": True,
-                "responses_logged": True
-            },
-            "anonymized_data": {
-                "name": "[OWNER_NAME]",
-                "email": "[EMAIL]",
-                "industry": SAMPLE_FORM_DATA["industry"],
-                "revenue_range": SAMPLE_FORM_DATA["revenue_range"],  # Already normalized above
-                "years_in_business": SAMPLE_FORM_DATA["years_in_business"],
-                "age_range": SAMPLE_FORM_DATA["age_range"],
-                "exit_timeline": SAMPLE_FORM_DATA["exit_timeline"],
-                "location": SAMPLE_FORM_DATA["location"],
-                "responses": anonymized_responses
-            },
-            "pii_mapping": test_pii_mapping,
-            # Business context for easy access
+            "messages": ["Simulated intake completion"],
+            # Business context
             "industry": SAMPLE_FORM_DATA["industry"],
             "location": SAMPLE_FORM_DATA["location"],
             "revenue_range": SAMPLE_FORM_DATA["revenue_range"],
             "exit_timeline": SAMPLE_FORM_DATA["exit_timeline"],
-            "years_in_business": SAMPLE_FORM_DATA["years_in_business"]
+            "years_in_business": SAMPLE_FORM_DATA["years_in_business"],
+            # Simulated intake result
+            "intake_result": {
+                "validation_status": "success",
+                "pii_mapping": test_pii_mapping,
+                "anonymized": True
+            },
+            # Anonymized data for processing
+            "anonymized_data": {
+                "responses": SAMPLE_FORM_DATA["responses"],
+                "industry": SAMPLE_FORM_DATA["industry"],
+                "revenue_range": SAMPLE_FORM_DATA["revenue_range"],
+                "years_in_business": SAMPLE_FORM_DATA["years_in_business"],
+                "exit_timeline": SAMPLE_FORM_DATA["exit_timeline"],
+                "location": SAMPLE_FORM_DATA["location"]
+            },
+            "pii_mapping": test_pii_mapping
         }
         
-        # Execute the complete workflow
         print(f"\n🎯 Executing full assessment pipeline...")
         print(f"   UUID: {SAMPLE_FORM_DATA['uuid']}")
         print(f"   Business: {SAMPLE_FORM_DATA['industry']} / {SAMPLE_FORM_DATA['revenue_range']}")
@@ -268,87 +231,141 @@ async def test_e2e_enhanced_workflow():
         
         print(f"\n⏱️  Total execution time: {execution_time:.2f} seconds")
         
-        # Validate results
+        # Validate results - CHECK final_output INSTEAD OF result
         print("\n🔍 Validating workflow results...")
         
-        # 1. Check status
+        # Extract final_output where all the data is
+        final_output = result.get("final_output", {})
+        
+        # 1. Check workflow completed
         log_assertion(
             "Workflow completed successfully",
-            result.get("status") == "completed",
-            {"status": result.get("status"), "error": result.get("error")}
+            result.get("current_stage") == "completed" and not result.get("error"),
+            {"stage": result.get("current_stage"), "error": result.get("error")}
         )
         
-        # 2. Check all required fields
-        required_fields = ["uuid", "status", "locale", "owner_name", "email", 
-                         "scores", "executive_summary", "next_steps", "processing_time"]
+        # 2. Check all required fields IN final_output
+        log_assertion(
+            "Result contains uuid",
+            result.get("uuid") is not None,
+            {"has_field": result.get("uuid") is not None}
+        )
         
-        for field in required_fields:
-            log_assertion(
-                f"Result contains {field}",
-                field in result,
-                {"has_field": field in result}
-            )
+        log_assertion(
+            "Result contains status",
+            final_output.get("status") == "completed",
+            {"status": final_output.get("status")}
+        )
         
-        # 3. Check scores are numeric
-        scores = result.get("scores", {})
-        overall_score = scores.get("overall_score")
+        log_assertion(
+            "Result contains locale", 
+            result.get("locale") is not None,
+            {"locale": result.get("locale")}
+        )
+        
+        # Check personalization fields in final_output
+        log_assertion(
+            "Result contains owner_name",
+            final_output.get("owner_name") is not None,
+            {"owner_name": final_output.get("owner_name")}
+        )
+        
+        log_assertion(
+            "Result contains email",
+            final_output.get("email") is not None,
+            {"email": final_output.get("email")}
+        )
+        
+        # 3. Check scores in final_output
+        scores = final_output.get("scores", {})
+        overall_score = scores.get("overall")
+        
+        log_assertion(
+            "Result contains scores",
+            bool(scores),
+            {"has_scores": bool(scores)}
+        )
+        
+        log_assertion(
+            "Result contains executive_summary",
+            bool(final_output.get("executive_summary")),
+            {"has_summary": bool(final_output.get("executive_summary"))}
+        )
+        
+        log_assertion(
+            "Result contains next_steps",
+            bool(final_output.get("next_steps")),
+            {"has_next_steps": bool(final_output.get("next_steps"))}
+        )
+        
+        log_assertion(
+            "Result contains processing_time",
+            bool(result.get("processing_time")),
+            {"has_timing": bool(result.get("processing_time"))}
+        )
+        
         log_assertion(
             "Overall score is numeric",
             isinstance(overall_score, (int, float)) and 0 <= overall_score <= 10,
             {"score": overall_score}
         )
         
-        # 4. Check each stage was executed
+        # 4. Check stage execution times
         processing_times = result.get("processing_time", {})
-        expected_stages = ["intake", "research", "scoring", "summary", "qa", "pii_reinsertion"]
+        stages = ["intake", "research", "scoring", "summary", "qa", "pii_reinsertion"]
         
-        for stage in expected_stages:
-            stage_time = processing_times.get(stage)
-            log_assertion(
-                f"{stage} stage executed",
-                stage_time is not None and stage_time > 0,
-                {"time": stage_time}
-            )
+        for stage in stages:
+            if stage != "intake":  # We simulated intake
+                log_assertion(
+                    f"{stage} stage executed",
+                    stage in processing_times and processing_times[stage] > 0,
+                    {"time": processing_times.get(stage)}
+                )
         
-        # 5. Check LLM enhancements are present
+        # For intake, we manually added it
+        log_assertion(
+            "intake stage executed",
+            "intake" in processing_times,
+            {"time": processing_times.get("intake")}
+        )
         
-        # Research should have citations
-        metadata = result.get("metadata", {})
-        stages_completed = metadata.get("stages_completed", [])
+        # 5. Check all stages completed
+        expected_stages = ["intake", "research", "scoring", "summary", "pii_reinsertion"]
+        completed_stages = list(processing_times.keys())
         
         log_assertion(
             "All stages completed",
-            len(stages_completed) >= 6,
-            {"stages": stages_completed}
+            all(stage in completed_stages for stage in expected_stages),
+            {"stages": completed_stages}
         )
         
-        # Executive summary should be substantial (LLM generated)
-        exec_summary = result.get("executive_summary", "")
+        # 6. Check LLM-generated content quality
+        exec_summary = final_output.get("executive_summary", "")
         log_assertion(
             "Executive summary is LLM-generated (>200 chars)",
             len(exec_summary) > 200,
-            {"length": len(exec_summary), "preview": exec_summary[:100] + "..."}
+            {"length": len(exec_summary), "preview": exec_summary[:200] + "..."}
         )
         
-        # Next steps should be personalized
-        next_steps = result.get("next_steps", "")
+        # 7. Check personalization
+        next_steps = final_output.get("next_steps", "")
         log_assertion(
             "Next steps are personalized (contains timeline)",
-            "1-2 year" in next_steps or "timeline" in next_steps.lower(),
-            {"contains_timeline": "timeline" in next_steps.lower()}
+            any(timeline in next_steps for timeline in ["1-2 years", "timeline", "18-24 months"]),
+            {"contains_timeline": any(t in next_steps for t in ["1-2 years", "timeline", "18-24 months"])}
         )
         
-        # 6. Check performance targets
+        # 8. Check execution time
         log_assertion(
             "Total execution under 3 minutes",
             execution_time < 180,
-            {"time": execution_time, "target": 180}
+            {"time": execution_time}
         )
         
-        # 7. Display key results
+        # Display key results
         print(f"\n📊 Assessment Results:")
         print(f"   Overall Score: {overall_score}/10")
-        print(f"   Readiness Level: {scores.get('readiness_level', 'Unknown')}")
+        print(f"   Readiness Level: {final_output.get('scores', {}).get('readiness_level', 'Unknown')}")
         print(f"   Total Processing Time: {execution_time:.1f}s")
         
         print(f"\n   Stage Breakdown:")
