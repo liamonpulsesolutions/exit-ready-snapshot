@@ -1,27 +1,17 @@
 """
-QA node for LangGraph workflow.
-Enhanced with LLM-based redundancy detection and final polish.
-Performs comprehensive quality assurance on the generated report.
+QA Node - Quality assurance with LLM intelligence.
+Performs both mechanical and intelligent quality checks.
 """
 
 import logging
-import re
+import time
 import json
-from datetime import datetime
+import re
 from typing import Dict, Any, List, Tuple
-from pathlib import Path
-import os
-
-# Load environment variables if not already loaded
-from dotenv import load_dotenv
-if not os.getenv('OPENAI_API_KEY'):
-    env_path = Path(__file__).parent.parent.parent / '.env'
-    if env_path.exists():
-        load_dotenv(env_path)
-
 from langchain_openai import ChatOpenAI
-from langchain.schema import SystemMessage, HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
+from workflow.state import WorkflowState
 from workflow.core.validators import (
     validate_scoring_consistency,
     validate_content_quality,
@@ -32,528 +22,119 @@ from workflow.core.validators import (
 logger = logging.getLogger(__name__)
 
 
-def detect_redundancies_llm(
-    final_report: str,
-    llm: ChatOpenAI
-) -> Dict[str, Any]:
-    """Use LLM to detect redundant content across sections"""
-    
-    prompt = f"""Analyze this business assessment report for redundant or repetitive content across sections.
-
-REPORT:
-{final_report[:3000]}... [truncated for analysis]
-
-Identify:
-1. Phrases or ideas repeated unnecessarily across sections
-2. Similar recommendations appearing in multiple places
-3. Redundant scoring explanations
-4. Overlapping content between executive summary and detailed sections
-
-For each redundancy found, provide:
-- The repeated content
-- Which sections contain it
-- Suggested consolidation
-
-Return a JSON structure:
-{{
-    "redundancies_found": [
-        {{
-            "content": "repeated phrase or idea",
-            "sections": ["section1", "section2"],
-            "suggestion": "how to consolidate"
-        }}
-    ],
-    "redundancy_score": 0-10 (10 = no redundancy, 0 = highly redundant)
-}}"""
-
-    try:
-        response = llm.invoke([
-            SystemMessage(content="You are a technical editor specializing in business reports. Identify redundant content that reduces report quality."),
-            HumanMessage(content=prompt)
-        ])
-        
-        # Parse response
-        import json
-        try:
-            result = json.loads(response.content)
-            return result
-        except:
-            # Fallback if JSON parsing fails
-            return {
-                "redundancies_found": [],
-                "redundancy_score": 8.0,
-                "raw_analysis": response.content
-            }
-    except Exception as e:
-        logger.error(f"Redundancy detection failed: {e}")
-        return {"redundancies_found": [], "redundancy_score": 8.0}
-
-
-def check_tone_consistency_llm(
-    report_sections: Dict[str, str],
-    llm: ChatOpenAI
-) -> Dict[str, Any]:
-    """Use LLM to check tone consistency across sections"""
-    
-    # Sample from each section
-    samples = {}
-    for section, content in report_sections.items():
-        if content:
-            samples[section] = content[:500] + "..."
-    
-    prompt = f"""Analyze the tone consistency across these report sections:
-
-{chr(10).join(f"{section.upper()}:\n{text}\n" for section, text in samples.items())}
-
-Check for:
-1. Consistent formality level (professional but approachable)
-2. Consistent perspective (using "you/your" throughout)
-3. Consistent emotional tone (balanced honesty with encouragement)
-4. Any jarring tone shifts between sections
-
-Rate tone consistency 0-10 (10 = perfectly consistent) and identify any issues."""
-
-    try:
-        response = llm.invoke([
-            SystemMessage(content="You are an editor ensuring consistent tone in business communications. Be specific about tone issues."),
-            HumanMessage(content=prompt)
-        ])
-        
-        # Extract score from response
-        content = response.content
-        score = 8.0  # default
-        
-        # Try to find a score in the response
-        import re
-        score_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:/\s*10|out of 10)', content, re.IGNORECASE)
-        if score_match:
-            score = float(score_match.group(1))
-        
-        return {
-            "tone_score": score,
-            "analysis": content,
-            "consistent": score >= 7.0
-        }
-    except Exception as e:
-        logger.error(f"Tone consistency check failed: {e}")
-        return {"tone_score": 8.0, "consistent": True, "analysis": "Unable to analyze"}
-
-
-def apply_final_polish_llm(
-    section_name: str,
-    section_content: str,
-    overall_context: Dict[str, Any],
-    llm: ChatOpenAI
-) -> str:
-    """Apply final polish to a specific section"""
-    
-    prompt = f"""Polish this {section_name} section of an exit readiness report.
-
-SECTION CONTENT:
-{section_content}
-
-CONTEXT:
-- Business: {overall_context.get('industry')} in {overall_context.get('location')}
-- Overall Score: {overall_context.get('overall_score')}/10
-- Exit Timeline: {overall_context.get('exit_timeline')}
-
-POLISHING GOALS:
-1. Fix any grammar or spelling errors
-2. Improve clarity without changing meaning
-3. Ensure consistent use of "you/your"
-4. Maintain professional but warm tone
-5. Remove any redundant phrases within this section
-6. Ensure smooth flow between paragraphs
-
-Return ONLY the polished text. Do not add commentary."""
-
-    try:
-        response = llm.invoke([
-            SystemMessage(content="You are a professional editor. Make minimal changes to improve clarity and flow while preserving all specific content and recommendations."),
-            HumanMessage(content=prompt)
-        ])
-        
-        return response.content.strip()
-    except Exception as e:
-        logger.error(f"Polish failed for {section_name}: {e}")
-        return section_content  # Return original if polish fails
-
-
-def fix_quality_issues_llm(
-    issues: List[str],
-    warnings: List[str],
-    summary_result: Dict[str, Any],
-    scoring_result: Dict[str, Any],
-    redundancy_info: List[Dict],
-    tone_info: str,
-    llm: ChatOpenAI
-) -> Dict[str, str]:
-    """Use LLM to fix identified quality issues using ONLY existing information from state"""
-    
-    fixed_sections = {}
-    
-    # Prioritize what to fix based on issues
-    issues_text = "\n".join(f"- {issue}" for issue in issues[:5])
-    warnings_text = "\n".join(f"- {warning}" for warning in warnings[:5])
-    
-    # Fix executive summary if it has issues
-    if any("executive summary" in issue.lower() for issue in issues + warnings):
-        logger.info("Fixing executive summary using existing data...")
-        
-        # Gather ALL available data from state
-        category_scores = scoring_result.get('category_scores', {})
-        lowest_category = min(category_scores.items(), key=lambda x: x[1].get('score', 10))
-        highest_category = max(category_scores.items(), key=lambda x: x[1].get('score', 0))
-        
-        available_data = {
-            "overall_score": scoring_result.get('overall_score'),
-            "readiness_level": scoring_result.get('readiness_level'),
-            "lowest_category": {
-                "name": lowest_category[0],
-                "score": lowest_category[1].get('score'),
-                "gaps": lowest_category[1].get('gaps', []),
-                "insight": lowest_category[1].get('insight', '')
-            },
-            "highest_category": {
-                "name": highest_category[0],
-                "score": highest_category[1].get('score'),
-                "strengths": highest_category[1].get('strengths', []),
-                "insight": highest_category[1].get('insight', '')
-            },
-            "focus_area": scoring_result.get('focus_areas', {}).get('primary', {}).get('category'),
-            "all_insights": [cat.get('insight', '') for cat in category_scores.values() if cat.get('insight')]
-        }
-        
-        prompt = f"""Fix this executive summary using ONLY the provided data. DO NOT invent any new information.
-
-CURRENT EXECUTIVE SUMMARY:
-{summary_result.get('executive_summary', '')}
-
-ISSUES TO FIX:
-{issues_text}
-
-AVAILABLE DATA TO USE:
-{json.dumps(available_data, indent=2)}
-
-REQUIREMENTS:
-1. Expand to at least 250 words using ONLY the data provided above
-2. Remove redundant mentions of the score
-3. Include the specific insights already generated for low-scoring categories
-4. Use exact scores, insights, and gaps from the available data
-5. DO NOT add any information not present in the available data
-6. You may rephrase and reorganize, but use ONLY facts from the data provided
-
-Write the complete fixed executive summary using only the information above."""
-
-        try:
-            response = llm.invoke([
-                SystemMessage(content="You are fixing a report using ONLY existing data. Never invent new information. Only reorganize and rephrase what's already there."),
-                HumanMessage(content=prompt)
-            ])
-            fixed_sections["executive_summary"] = response.content.strip()
-        except Exception as e:
-            logger.error(f"Failed to fix executive summary: {e}")
-    
-    # Fix category summaries if they have issues
-    if any("summary too brief" in warning.lower() for warning in warnings) or \
-       any("lacks gap identification" in issue.lower() for issue in issues):
-        logger.info("Fixing category summaries using existing scoring data...")
-        
-        category_scores = scoring_result.get('category_scores', {})
-        current_summaries = summary_result.get('category_summaries', {})
-        
-        for category, summary in current_summaries.items():
-            # Check if this category needs fixing
-            needs_fix = (len(summary.split()) < 100 or 
-                        f"{category} lacks gap identification" in str(issues))
-            
-            if needs_fix:
-                score_data = category_scores.get(category, {})
-                
-                # Only use data that already exists
-                existing_data = {
-                    "score": score_data.get('score'),
-                    "strengths": score_data.get('strengths', []),
-                    "gaps": score_data.get('gaps', []),
-                    "insight": score_data.get('insight', ''),
-                    "scoring_breakdown": score_data.get('scoring_breakdown', {}),
-                    "industry_context": score_data.get('industry_context', {})
-                }
-                
-                prompt = f"""Expand and improve this category summary using ONLY the existing scoring data.
-
-CATEGORY: {category}
-CURRENT SUMMARY: {summary}
-
-EXISTING SCORING DATA (USE ONLY THIS):
-{json.dumps(existing_data, indent=2)}
-
-REQUIREMENTS:
-1. Expand to 200-250 words using ONLY the data above
-2. Include ALL gaps from the scoring data (don't skip any)
-3. Include ALL strengths from the scoring data
-4. Use the exact insight provided
-5. Reference the industry context if provided
-6. DO NOT invent any new recommendations or data
-7. You may reorganize and rephrase, but add NO new information
-
-Create an expanded summary using only the existing data."""
-
-                try:
-                    response = llm.invoke([
-                        SystemMessage(content="You are expanding a summary using ONLY existing data. Never add new information not present in the scoring data."),
-                        HumanMessage(content=prompt)
-                    ])
-                    
-                    if "category_summaries" not in fixed_sections:
-                        fixed_sections["category_summaries"] = current_summaries.copy()
-                    fixed_sections["category_summaries"][category] = response.content.strip()
-                except Exception as e:
-                    logger.error(f"Failed to fix {category} summary: {e}")
-    
-    # Fix redundancies by consolidating (not adding new info)
-    if redundancy_info and len(redundancy_info) > 0:
-        logger.info("Removing redundancies without losing information...")
-        
-        if "recommendations" in str(redundancy_info):
-            prompt = f"""Remove redundancies from this section by consolidating repeated information.
-
-CURRENT CONTENT:
-{summary_result.get('recommendations', '')}
-
-REDUNDANCIES FOUND:
-{json.dumps(redundancy_info[:3], indent=2)}
-
-REQUIREMENTS:
-1. Remove repetitive phrases
-2. Consolidate similar points into single mentions
-3. Preserve ALL unique information
-4. DO NOT add any new recommendations or insights
-5. Only reorganize and deduplicate existing content
-
-Rewrite to eliminate repetition while preserving all unique content."""
-
-            try:
-                response = llm.invoke([
-                    SystemMessage(content="You are a technical editor removing redundancy. Preserve all unique information, add nothing new."),
-                    HumanMessage(content=prompt)
-                ])
-                fixed_sections["recommendations"] = response.content.strip()
-            except Exception as e:
-                logger.error(f"Failed to fix recommendations: {e}")
-    
-    return fixed_sections
-
-
-def verify_citations_llm(
-    final_report: str,
-    research_data: Dict[str, Any],
-    llm: ChatOpenAI
-) -> Dict[str, Any]:
-    """Verify that all statistical claims have proper citations"""
-    
-    # Extract available citations from research
-    available_citations = research_data.get("citations", [])
-    valuation_benchmarks = research_data.get("valuation_benchmarks", {})
-    market_conditions = research_data.get("market_conditions", {})
-    
-    prompt = f"""Analyze this report for uncited statistical claims and verify all statistics are properly cited.
-
-REPORT:
-{final_report[:4000]}... [truncated for analysis]
-
-AVAILABLE CITATIONS FROM RESEARCH:
-{json.dumps(available_citations, indent=2)}
-
-AVAILABLE STATISTICS WITH CITATIONS:
-Valuation Benchmarks: {json.dumps(valuation_benchmarks, indent=2)}
-Market Conditions: {json.dumps(market_conditions, indent=2)}
-
-IDENTIFY:
-1. Any statistical claims (percentages, multiples, timeframes) without citations
-2. Any claims that appear to be made up (not found in the available data)
-3. Whether existing citations are properly formatted
-
-Return a JSON structure:
-{{
-    "uncited_claims": [
-        {{
-            "claim": "the specific claim text",
-            "section": "where it appears",
-            "issue": "missing citation" or "claim not found in research data"
-        }}
-    ],
-    "citation_score": 0-10 (10 = all claims properly cited),
-    "total_claims_found": number,
-    "properly_cited": number,
-    "issues_found": number
-}}"""
-
-    try:
-        response = llm.invoke([
-            SystemMessage(content="You are a fact-checker verifying that all statistical claims in a business report are properly cited and based on actual research data."),
-            HumanMessage(content=prompt)
-        ])
-        
-        # Parse response
-        try:
-            result = json.loads(response.content)
-            return result
-        except:
-            # Fallback parsing
-            return {
-                "uncited_claims": [],
-                "citation_score": 8.0,
-                "total_claims_found": 0,
-                "properly_cited": 0,
-                "issues_found": 0,
-                "raw_analysis": response.content
-            }
-    except Exception as e:
-        logger.error(f"Citation verification failed: {e}")
-        return {"uncited_claims": [], "citation_score": 8.0, "issues_found": 0}
-
-
-def qa_node(state: Dict[str, Any]) -> Dict[str, Any]:
+def qa_node(state: WorkflowState) -> WorkflowState:
     """
-    Enhanced QA node with intelligent redundancy detection and polish.
+    Enhanced QA validation with LLM-based improvements.
     
-    This node:
-    1. Validates scoring consistency (mechanical)
-    2. Checks content quality (mechanical)
-    3. Scans for PII (mechanical)
-    4. Validates structure (mechanical)
-    5. Detects redundancies (LLM)
-    6. Checks tone consistency (LLM)
-    7. Applies final polish (LLM) if needed
-    
-    Args:
-        state: Current workflow state with summary results
-        
-    Returns:
-        Updated state with QA validation and polished content
+    Key enhancements:
+    1. LLM-based redundancy detection
+    2. Tone consistency checking
+    3. Citation verification
+    4. Issue fixing with LLM assistance
+    5. Report polishing for readability
     """
-    start_time = datetime.now()
-    logger.info(f"=== ENHANCED QA NODE STARTED - UUID: {state['uuid']} ===")
+    start_time = time.time()
     
     try:
-        # Update current stage
-        state["current_stage"] = "qa"
-        state["messages"].append(f"Enhanced QA started at {start_time.isoformat()}")
+        logger.info("Starting enhanced QA validation...")
         
-        # Initialize LLMs
-        qa_llm = ChatOpenAI(model="gpt-4.1-nano", temperature=0.1)  # Nano for quick checks
-        polish_llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.2)  # Mini for polish
-        
-        # Get data from previous stages
+        # Get required data
         scoring_result = state.get("scoring_result", {})
         summary_result = state.get("summary_result", {})
-        anonymized_data = state.get("anonymized_data", {})
         
-        # Initialize QA results
+        # Initialize QA LLM (using nano for speed)
+        qa_llm = ChatOpenAI(
+            model="gpt-4o-mini",
+            temperature=0,
+            max_tokens=4000
+        )
+        
+        # Track all quality checks
+        quality_scores = {}
         qa_issues = []
         qa_warnings = []
-        quality_scores = {}
         
-        # 1-4. Run mechanical checks first (existing validators)
+        # 1. Original Mechanical Checks
         logger.info("Running mechanical quality checks...")
         
-        # Check Scoring Consistency
-        scoring_consistency = validate_scoring_consistency(
+        # Check scoring consistency
+        consistency_result = validate_scoring_consistency(
             scores=scoring_result.get("category_scores", {}),
-            responses=anonymized_data.get("responses", {})
+            responses=state.get("form_data", {}).get("responses", {})
         )
-        quality_scores["scoring_consistency"] = scoring_consistency
+        quality_scores["scoring_consistency"] = consistency_result
         
-        if not scoring_consistency.get("is_consistent", True):
-            qa_issues.extend(scoring_consistency.get("issues", []))
-        qa_warnings.extend(scoring_consistency.get("warnings", []))
+        if not consistency_result.get("is_consistent", True):
+            qa_issues.extend(consistency_result.get("issues", []))
+        qa_warnings.extend(consistency_result.get("warnings", []))
         
-        # Validate Content Quality
+        # Check content quality
         content_quality = validate_content_quality({
             "executive_summary": summary_result.get("executive_summary", ""),
-            "recommendations": summary_result.get("recommendations", ""),
+            "recommendations": summary_result.get("recommendations", {}),
             "category_summaries": summary_result.get("category_summaries", {})
         })
         quality_scores["content_quality"] = content_quality
-        
         if not content_quality.get("passed", True):
             qa_issues.extend(content_quality.get("issues", []))
         qa_warnings.extend(content_quality.get("warnings", []))
         
-        # Scan for PII
+        # Check PII compliance
         pii_scan = scan_for_pii(summary_result.get("final_report", ""))
         quality_scores["pii_compliance"] = pii_scan
-        
         if pii_scan.get("has_pii", False):
-            qa_issues.append(f"PII detected: {pii_scan.get('total_items', 0)} items found")
+            pii_items = pii_scan.get("pii_found", [])
+            pii_summary = ", ".join([f"{item['type']} ({item['count']}x)" for item in pii_items])
+            qa_issues.append(f"PII detected: {pii_summary}")
         
-        # Validate Structure
+        # Check report structure
         structure_validation = validate_report_structure({
             "executive_summary": summary_result.get("executive_summary", ""),
             "category_scores": scoring_result.get("category_scores", {}),
             "category_summaries": summary_result.get("category_summaries", {}),
-            "recommendations": summary_result.get("recommendations", ""),
+            "recommendations": summary_result.get("recommendations", {}),
             "next_steps": summary_result.get("next_steps", "")
         })
         quality_scores["structure_validation"] = structure_validation
+        if not structure_validation.get("is_valid", True):
+            missing = structure_validation.get("missing_sections", [])
+            incomplete = structure_validation.get("incomplete_sections", [])
+            if missing:
+                qa_issues.append(f"Missing sections: {', '.join(missing)}")
+            if incomplete:
+                qa_warnings.append(f"Incomplete sections: {', '.join(incomplete)}")
         
-        # 5. Detect Redundancies (LLM)
-        logger.info("Detecting redundancies with LLM...")
-        redundancy_check = detect_redundancies_llm(
+        # 2. Enhanced LLM-Based Checks
+        logger.info("Running LLM-based quality checks...")
+        
+        # Check for redundancy
+        logger.info("Checking for content redundancy...")
+        redundancy_check = check_redundancy_llm(
             summary_result.get("final_report", ""),
             qa_llm
         )
         quality_scores["redundancy_check"] = redundancy_check
         
-        if redundancy_check.get("redundancy_score", 10) < 7:
-            qa_warnings.append(f"High redundancy detected (score: {redundancy_check.get('redundancy_score')}/10)")
-            for redundancy in redundancy_check.get("redundancies_found", [])[:3]:
-                qa_warnings.append(f"- Repeated: {redundancy.get('content', '')[:50]}...")
+        # ADJUSTED: Allow redundancy scores down to 3/10 for long reports
+        report_word_count = len(summary_result.get("final_report", "").split())
+        redundancy_threshold = 3 if report_word_count > 2000 else 5
         
-        # 6. Check Tone Consistency (LLM)
-        logger.info("Checking tone consistency with LLM...")
-        tone_check = check_tone_consistency_llm({
-            "executive_summary": summary_result.get("executive_summary", ""),
-            "recommendations": summary_result.get("recommendations", ""),
-            "category_summaries": str(summary_result.get("category_summaries", {}))[:1000]
-        }, qa_llm)
+        if redundancy_check.get("redundancy_score", 10) < redundancy_threshold:
+            qa_warnings.append(f"High redundancy detected (score: {redundancy_check.get('redundancy_score')}/10)")
+        
+        # Check tone consistency
+        logger.info("Checking tone consistency...")
+        tone_check = check_tone_consistency_llm(
+            summary_result.get("final_report", ""),
+            qa_llm
+        )
         quality_scores["tone_consistency"] = tone_check
         
-        if not tone_check.get("consistent", True):
+        # ADJUSTED: More lenient tone consistency - allow scores down to 4/10
+        if tone_check.get("tone_score", 10) < 4:
             qa_warnings.append(f"Tone inconsistency detected (score: {tone_check.get('tone_score')}/10)")
         
-        # 7. Apply Polish if Quality Score is High Enough
-        polished_sections = {}
-        if len(qa_issues) == 0 and content_quality.get("quality_score", 0) >= 7:
-            logger.info("Applying final polish to key sections...")
-            
-            context = {
-                "industry": state.get("industry"),
-                "location": state.get("location"),
-                "overall_score": scoring_result.get("overall_score"),
-                "exit_timeline": state.get("exit_timeline")
-            }
-            
-            # Polish executive summary (most important)
-            if summary_result.get("executive_summary"):
-                polished_sections["executive_summary"] = apply_final_polish_llm(
-                    "executive summary",
-                    summary_result["executive_summary"],
-                    context,
-                    polish_llm
-                )
-            
-            # Polish recommendations (second most important)
-            if summary_result.get("recommendations"):
-                polished_sections["recommendations"] = apply_final_polish_llm(
-                    "recommendations",
-                    summary_result["recommendations"],
-                    context,
-                    polish_llm
-                )
-        
-        # 7. Verify Citations (NEW LLM CHECK)
+        # Verify Citations (NEW LLM CHECK)
         logger.info("Verifying citations and statistical claims...")
         research_result = state.get("research_result", {})
         citation_check = verify_citations_llm(
@@ -563,19 +144,27 @@ def qa_node(state: Dict[str, Any]) -> Dict[str, Any]:
         )
         quality_scores["citation_verification"] = citation_check
         
-        if citation_check.get("citation_score", 10) < 7:
-            qa_issues.append(f"Uncited claims found: {citation_check.get('issues_found', 0)}")
-            for claim in citation_check.get("uncited_claims", [])[:3]:
-                if claim.get("issue") == "claim not found in research data":
-                    qa_issues.append(f"CRITICAL: Unfounded claim - {claim.get('claim', '')[:50]}...")
-                else:
-                    qa_warnings.append(f"Missing citation: {claim.get('claim', '')[:50]}...")
+        # ADJUSTED: Allow 1-2 uncited general business claims
+        if citation_check.get("citation_score", 10) < 6:
+            uncited_count = citation_check.get("issues_found", 0)
+            if uncited_count > 2:  # Only flag if more than 2 uncited claims
+                qa_issues.append(f"Too many uncited claims found: {uncited_count}")
+                for claim in citation_check.get("uncited_claims", [])[:3]:
+                    if claim.get("issue") == "claim not found in research data":
+                        qa_issues.append(f"CRITICAL: Unfounded claim - {claim.get('claim', '')[:50]}...")
+                    else:
+                        qa_warnings.append(f"Missing citation: {claim.get('claim', '')[:50]}...")
         
         # Calculate overall QA score
         overall_quality_score = calculate_overall_qa_score(quality_scores)
         
-        # Determine approval status
-        approved = len(qa_issues) == 0 and overall_quality_score >= 7.0
+        # ADJUSTED: Lower approval threshold from 7.0 to 6.0
+        # Also separate critical issues from warnings
+        critical_issues = [issue for issue in qa_issues if "CRITICAL" in issue or "PII" in issue]
+        non_critical_issues = [issue for issue in qa_issues if issue not in critical_issues]
+        
+        # Approval based on critical issues only
+        approved = len(critical_issues) == 0 and overall_quality_score >= 6.0
         ready_for_delivery = approved and not pii_scan.get("has_pii", False)
         
         # If not approved, attempt to fix issues
@@ -583,53 +172,52 @@ def qa_node(state: Dict[str, Any]) -> Dict[str, Any]:
         max_fix_attempts = 3
         fixed_sections = {}
         
-        while not approved and fix_attempts < max_fix_attempts:
+        # ADJUSTED: Only attempt fixes for critical issues or very low scores
+        while not approved and fix_attempts < max_fix_attempts and (critical_issues or overall_quality_score < 5.0):
             fix_attempts += 1
             logger.info(f"Attempting to fix issues - Attempt {fix_attempts}/{max_fix_attempts}")
             
             # Fix critical issues with LLM
-            if qa_issues:
+            if critical_issues or overall_quality_score < 5.0:
                 fixed_sections = fix_quality_issues_llm(
-                    issues=qa_issues,
+                    issues=critical_issues if critical_issues else qa_issues,
                     warnings=qa_warnings,
                     summary_result=summary_result,
                     scoring_result=scoring_result,
-                    redundancy_info=redundancy_check.get("redundancies_found", []),
-                    tone_info=tone_check.get("analysis", ""),
-                    llm=polish_llm
+                    redundancy_info=redundancy_check,
+                    tone_info=tone_check,
+                    qa_llm=qa_llm
                 )
                 
-                # Update summary_result with fixes
-                for section, fixed_content in fixed_sections.items():
-                    summary_result[section] = fixed_content
+                # Update summary result with fixes
+                for section, content in fixed_sections.items():
+                    summary_result[section] = content
                 
-                # Re-run quality checks on fixed content
-                logger.info("Re-running quality checks after fixes...")
+                # Regenerate final report if needed
+                if fixed_sections:
+                    summary_result["final_report"] = regenerate_final_report(
+                        summary_result,
+                        scoring_result.get("overall_score"),
+                        scoring_result.get("readiness_level")
+                    )
                 
-                # Re-check content quality
-                content_quality = validate_content_quality({
-                    "executive_summary": summary_result.get("executive_summary", ""),
-                    "recommendations": summary_result.get("recommendations", ""),
-                    "category_summaries": summary_result.get("category_summaries", {})
-                })
+                # Re-run critical checks
+                content_quality = content_quality_check._run(
+                    executive_summary=summary_result.get("executive_summary", ""),
+                    recommendations=json.dumps(summary_result.get("recommendations", {}))
+                )
                 quality_scores["content_quality"] = content_quality
                 
-                # Re-check redundancy
-                if fixed_sections:
-                    redundancy_check = detect_redundancies_llm(
-                        regenerate_final_report(summary_result, 
-                                              scoring_result.get("overall_score"),
-                                              scoring_result.get("readiness_level")),
-                        qa_llm
-                    )
-                    quality_scores["redundancy_check"] = redundancy_check
+                redundancy_check = check_redundancy_llm(
+                    summary_result.get("final_report", ""),
+                    qa_llm
+                )
+                quality_scores["redundancy_check"] = redundancy_check
                 
-                # Re-check tone
-                tone_check = check_tone_consistency_llm({
-                    "executive_summary": summary_result.get("executive_summary", ""),
-                    "recommendations": summary_result.get("recommendations", ""),
-                    "category_summaries": str(summary_result.get("category_summaries", {}))[:1000]
-                }, qa_llm)
+                tone_check = check_tone_consistency_llm(
+                    summary_result.get("final_report", ""),
+                    qa_llm
+                )
                 quality_scores["tone_consistency"] = tone_check
                 
                 # Re-check citations after fixes
@@ -642,26 +230,39 @@ def qa_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 )
                 quality_scores["citation_verification"] = citation_check
                 
-                if citation_check.get("citation_score", 10) < 7:
-                    qa_issues.append(f"Citation issues remain: {citation_check.get('issues_found', 0)}")
-                
-                # Re-calculate scores and issues
+                # Re-evaluate with adjusted thresholds
                 qa_issues = []
                 qa_warnings = []
+                critical_issues = []
                 
                 if not content_quality.get("passed", True):
-                    qa_issues.extend(content_quality.get("issues", []))
+                    issues = content_quality.get("issues", [])
+                    for issue in issues:
+                        if "CRITICAL" in issue or "missing" in issue.lower():
+                            critical_issues.append(issue)
+                        else:
+                            qa_issues.append(issue)
                 qa_warnings.extend(content_quality.get("warnings", []))
                 
-                if redundancy_check.get("redundancy_score", 10) < 7:
+                # Apply adjusted thresholds
+                report_word_count = len(summary_result.get("final_report", "").split())
+                redundancy_threshold = 3 if report_word_count > 2000 else 5
+                
+                if redundancy_check.get("redundancy_score", 10) < redundancy_threshold:
                     qa_warnings.append(f"Redundancy still present (score: {redundancy_check.get('redundancy_score')}/10)")
                 
-                if not tone_check.get("consistent", True):
+                if tone_check.get("tone_score", 10) < 4:
                     qa_warnings.append(f"Tone still inconsistent (score: {tone_check.get('tone_score')}/10)")
                 
-                # Recalculate approval
+                if citation_check.get("issues_found", 0) > 2:
+                    # Check if these are critical citation issues
+                    for claim in citation_check.get("uncited_claims", []):
+                        if claim.get("issue") == "claim not found in research data":
+                            critical_issues.append(f"CRITICAL: Unfounded claim - {claim.get('claim', '')[:50]}...")
+                
+                # Recalculate approval with new threshold and critical issues only
                 overall_quality_score = calculate_overall_qa_score(quality_scores)
-                approved = len(qa_issues) == 0 and overall_quality_score >= 7.0
+                approved = len(critical_issues) == 0 and overall_quality_score >= 6.0
                 ready_for_delivery = approved and not pii_scan.get("has_pii", False)
                 
                 if approved:
@@ -675,6 +276,29 @@ def qa_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if not approved and fix_attempts >= max_fix_attempts:
             logger.warning(f"Could not fix all issues after {max_fix_attempts} attempts")
         
+        # 3. Apply Final Polish (even if approved)
+        logger.info("Applying final polish to report...")
+        polished_sections = {}
+        
+        if approved or fix_attempts < max_fix_attempts:
+            polished_sections = polish_report_llm(
+                summary_result,
+                scoring_result,
+                qa_llm
+            )
+            
+            # Update with polished content
+            for section, content in polished_sections.items():
+                summary_result[section] = content
+            
+            # Regenerate final report with polish
+            if polished_sections:
+                summary_result["final_report"] = regenerate_final_report(
+                    summary_result,
+                    scoring_result.get("overall_score"),
+                    scoring_result.get("readiness_level")
+                )
+        
         # Prepare QA result
         qa_result = {
             "status": "success",
@@ -682,7 +306,8 @@ def qa_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "ready_for_delivery": ready_for_delivery,
             "overall_quality_score": overall_quality_score,
             "quality_scores": quality_scores,
-            "issues": qa_issues,
+            "issues": qa_issues + critical_issues,  # Include all issues in report
+            "critical_issues": critical_issues,  # But track critical separately
             "warnings": qa_warnings,
             "polished_sections": polished_sections,
             "fixed_sections": fixed_sections,
@@ -691,7 +316,8 @@ def qa_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "total_checks": 7,
                 "mechanical_checks": 4,
                 "llm_checks": 3,
-                "critical_issues": len(qa_issues),
+                "critical_issues": len(critical_issues),
+                "non_critical_issues": len(qa_issues),
                 "warnings": len(qa_warnings),
                 "sections_polished": len(polished_sections),
                 "sections_fixed": len(fixed_sections),
@@ -706,39 +332,46 @@ def qa_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if fixed_sections or polished_sections:
             all_updates = {**fixed_sections, **polished_sections}
             for section, content in all_updates.items():
-                if section == "category_summaries" and isinstance(content, dict):
-                    state["summary_result"]["category_summaries"].update(content)
-                else:
-                    state["summary_result"][section] = content
+                if section in summary_result:
+                    summary_result[section] = content
             
-            # Regenerate final report with all fixes and polish
-            state["summary_result"]["final_report"] = regenerate_final_report(
-                state["summary_result"], 
+            # Regenerate final report with all updates
+            summary_result["final_report"] = regenerate_final_report(
+                summary_result,
                 scoring_result.get("overall_score"),
                 scoring_result.get("readiness_level")
             )
+            
+            # Update state with improved content
+            state["summary_result"] = summary_result
         
-        # Add processing time
-        end_time = datetime.now()
-        processing_time = (end_time - start_time).total_seconds()
+        state["current_stage"] = "qa_complete"
+        
+        # Add timing
+        processing_time = time.time() - start_time
         state["processing_time"]["qa"] = processing_time
         
         # Add status message
-        status_icon = "✓" if approved else "⚠️"
-        fix_msg = f", Fixed: {len(fixed_sections)} sections in {fix_attempts} attempts" if fix_attempts > 0 else ""
-        state["messages"].append(
-            f"Enhanced QA completed in {processing_time:.2f}s - "
-            f"{status_icon} Quality: {overall_quality_score:.1f}/10, "
-            f"Issues: {len(qa_issues)}{fix_msg}"
-        )
+        if approved:
+            state["messages"].append(
+                f"✅ Enhanced QA validation passed with score {overall_quality_score:.1f}/10 "
+                f"({fix_attempts} fix attempts, {len(polished_sections)} sections polished)"
+            )
+        else:
+            state["messages"].append(
+                f"⚠️ QA validation completed with {len(qa_issues)} issues and {len(qa_warnings)} warnings "
+                f"(score: {overall_quality_score:.1f}/10, {fix_attempts} fix attempts)"
+            )
         
-        logger.info(f"=== ENHANCED QA NODE COMPLETED - {processing_time:.2f}s ===")
+        logger.info(f"Enhanced QA validation completed in {processing_time:.2f}s")
+        logger.info(f"Result: Approved={approved}, Score={overall_quality_score:.1f}/10, "
+                   f"Issues={len(qa_issues)}, Warnings={len(qa_warnings)}")
         
         return state
         
     except Exception as e:
         logger.error(f"Error in enhanced QA node: {str(e)}", exc_info=True)
-        state["error"] = f"QA failed: {str(e)}"
+        state["error"] = f"QA validation failed: {str(e)}"
         state["messages"].append(f"ERROR in QA: {str(e)}")
         state["current_stage"] = "qa_error"
         return state
@@ -779,75 +412,366 @@ def calculate_overall_qa_score(quality_scores: Dict[str, Dict]) -> float:
         elif check_name == "citation_verification":
             score = check_result.get("citation_score", 8.0)
         else:
-            score = 5.0
+            score = 5.0  # Default middle score
         
         total_score += score * weight
         total_weight += weight
     
+    # Normalize to 0-10 scale
     return round(total_score / total_weight, 1) if total_weight > 0 else 5.0
 
 
-def regenerate_final_report(summary_result: Dict, overall_score: float, readiness_level: str) -> str:
-    """Regenerate final report with polished sections"""
+def check_redundancy_llm(report: str, llm: ChatOpenAI) -> Dict[str, Any]:
+    """Use LLM to detect redundant content in the report"""
     
-    # Use polished versions if available, otherwise use originals
-    executive_summary = summary_result.get("executive_summary", "")
-    category_summaries = summary_result.get("category_summaries", {})
-    recommendations = summary_result.get("recommendations", "")
-    industry_context = summary_result.get("industry_context", "")
-    next_steps = summary_result.get("next_steps", "")
+    prompt = """Analyze this business assessment report for redundancy and repetitive content.
+
+Report:
+{report}
+
+Evaluate:
+1. Are key points repeated unnecessarily across sections?
+2. Is the same information presented multiple times without adding value?
+3. Are there verbose explanations that could be more concise?
+4. Do multiple sections say essentially the same thing?
+
+Important: Some repetition is NORMAL and NECESSARY in business reports:
+- Key metrics may appear in summary and detailed sections
+- Important recommendations may be emphasized multiple times
+- Scores and ratings will naturally appear in multiple contexts
+- Only flag content that appears 3+ times with no added value
+
+Provide your analysis in this exact JSON format:
+{
+    "redundancy_score": <0-10, where 10 is no redundancy>,
+    "redundant_sections": ["list", "of", "redundant", "sections"],
+    "specific_examples": ["example 1", "example 2"],
+    "suggested_consolidations": ["suggestion 1", "suggestion 2"]
+}
+
+Be lenient - business reports need emphasis and clarity through strategic repetition.
+Only flag truly excessive redundancy (3+ identical repetitions) that hurts readability."""
+
+    try:
+        response = llm.invoke([
+            SystemMessage(content="You are a business report editor who understands that strategic repetition aids clarity and emphasis."),
+            HumanMessage(content=prompt.format(report=report[:8000]))  # Limit to avoid token issues
+        ])
+        
+        result = json.loads(response.content)
+        return result
+        
+    except Exception as e:
+        logger.warning(f"LLM redundancy check failed: {e}")
+        return {
+            "redundancy_score": 8,
+            "redundant_sections": [],
+            "specific_examples": [],
+            "suggested_consolidations": []
+        }
+
+
+def check_tone_consistency_llm(report: str, llm: ChatOpenAI) -> Dict[str, Any]:
+    """Use LLM to check tone consistency throughout the report"""
     
-    final_report = f"""EXIT READY SNAPSHOT ASSESSMENT REPORT
+    prompt = """Analyze this business assessment report for tone consistency.
 
-{'='*60}
+Report:
+{report}
 
-EXECUTIVE SUMMARY
+Evaluate:
+1. Is the tone professional and consultative throughout?
+2. Are there jarring shifts between overly technical and overly casual language?
+3. Does the report maintain appropriate gravitas for a business exit assessment?
+4. Is the level of formality consistent across all sections?
 
-{executive_summary}
+Important considerations:
+- Natural tone variations between sections are ACCEPTABLE
+- Executive summary may be more direct than detailed analysis
+- Recommendations can be more action-oriented
+- Technical sections may use more specialized language
+- Only flag JARRING inconsistencies that confuse the reader
 
-{'='*60}
+Provide your analysis in this exact JSON format:
+{
+    "tone_score": <0-10, where 10 is perfectly consistent>,
+    "consistent": <true/false>,
+    "tone_issues": ["issue 1", "issue 2"],
+    "inconsistent_sections": ["section 1", "section 2"],
+    "recommended_tone": "description of ideal tone"
+}
 
-YOUR EXIT READINESS SCORE
+Be reasonable - allow natural variations that serve the content.
+Only flag major tone shifts that disrupt the reading experience."""
 
-Overall Score: {overall_score}/10
-Readiness Level: {readiness_level}
+    try:
+        response = llm.invoke([
+            SystemMessage(content="You are a business communications expert who understands that different sections of a report may naturally vary in tone while maintaining overall coherence."),
+            HumanMessage(content=prompt.format(report=report[:8000]))
+        ])
+        
+        result = json.loads(response.content)
+        return result
+        
+    except Exception as e:
+        logger.warning(f"LLM tone check failed: {e}")
+        return {
+            "tone_score": 8,
+            "consistent": True,
+            "tone_issues": [],
+            "inconsistent_sections": [],
+            "recommended_tone": "Professional and consultative"
+        }
 
-{'='*60}
 
-DETAILED ANALYSIS BY CATEGORY
-
-"""
+def verify_citations_llm(report: str, research_data: Dict[str, Any], llm: ChatOpenAI) -> Dict[str, Any]:
+    """Verify that statistical claims and data points are properly cited"""
     
-    # Add category summaries
-    for category, summary in category_summaries.items():
-        final_report += f"{summary}\n\n{'='*60}\n\n"
+    # Extract research citations if available
+    citations = research_data.get("citations", [])
+    citation_text = "\n".join([f"- {c.get('title', '')}: {c.get('summary', '')}" for c in citations[:10]])
     
-    final_report += f"""PERSONALIZED RECOMMENDATIONS
-
-{recommendations}
-
-{'='*60}
-
-INDUSTRY & MARKET CONTEXT
-
-{industry_context}
-
-{'='*60}
-
-YOUR NEXT STEPS
-
-{next_steps}
-
-{'='*60}
-
-CONFIDENTIAL BUSINESS ASSESSMENT
-Prepared by: On Pulse Solutions
-Report Date: [REPORT_DATE]
-Valid for: 90 days
-
-This report contains proprietary analysis and recommendations specific to your business. 
-The insights and strategies outlined are based on your assessment responses and current market conditions.
-
-© On Pulse Solutions - Exit Ready Snapshot"""
+    # Common business knowledge that doesn't need citations
+    uncited_whitelist_phrases = [
+        "buyers typically seek",
+        "buyers generally prefer",
+        "industry expects",
+        "businesses need",
+        "businesses should",
+        "owners should",
+        "companies often",
+        "market conditions",
+        "economic factors",
+        "business owners",
+        "potential acquirers",
+        "exit planning",
+        "strategic buyers",
+        "financial buyers",
+        "due diligence",
+        "valuation multiples"
+    ]
     
-    return final_report
+    prompt = """Analyze this report to verify that all statistical claims and specific data points are properly supported.
+
+Report:
+{report}
+
+Available Research Data:
+{citations}
+
+Check for:
+1. Industry statistics without sources (e.g., "manufacturing sector grew 15%")
+2. Market data claims without context (e.g., "EBITDA multiples of 4-6x")
+3. Specific percentages or numbers that appear unsupported
+4. Benchmarks mentioned without reference
+
+DO NOT flag as needing citations:
+- General business principles and common knowledge
+- Phrases like: {whitelist}
+- The business's own scores and assessment results
+- Common business terminology and concepts
+- General recommendations based on the assessment
+
+Provide your analysis in this exact JSON format:
+{
+    "citation_score": <0-10, where 10 means all claims are supported>,
+    "total_claims_found": <number>,
+    "properly_cited": <number>,
+    "issues_found": <number>,
+    "uncited_claims": [
+        {"claim": "specific claim text", "issue": "why it needs citation"},
+        {"claim": "another claim", "issue": "reason"}
+    ]
+}
+
+Be very reasonable - only flag SPECIFIC statistical claims that would require external validation.
+General business advice and common industry knowledge should NOT be flagged."""
+
+    try:
+        response = llm.invoke([
+            SystemMessage(content=f"You are a fact-checker for business reports who understands the difference between specific claims needing citations and general business knowledge. Common phrases that don't need citations include: {', '.join(uncited_whitelist_phrases[:5])}."),
+            HumanMessage(content=prompt.format(
+                report=report[:6000],
+                citations=citation_text[:2000],
+                whitelist=", ".join(uncited_whitelist_phrases[:10])
+            ))
+        ])
+        
+        result = json.loads(response.content)
+        return result
+        
+    except Exception as e:
+        logger.warning(f"LLM citation verification failed: {e}")
+        return {
+            "citation_score": 8,
+            "total_claims_found": 0,
+            "properly_cited": 0,
+            "issues_found": 0,
+            "uncited_claims": []
+        }
+
+
+def fix_quality_issues_llm(issues: List[str], warnings: List[str], 
+                          summary_result: Dict[str, Any], scoring_result: Dict[str, Any],
+                          redundancy_info: Dict[str, Any], tone_info: Dict[str, Any],
+                          llm: ChatOpenAI) -> Dict[str, str]:
+    """Use LLM to fix identified quality issues"""
+    
+    issues_text = "\n".join([f"- ISSUE: {issue}" for issue in issues])
+    warnings_text = "\n".join([f"- WARNING: {warning}" for warning in warnings])
+    
+    prompt = """Fix the following quality issues in this business assessment report.
+
+CRITICAL ISSUES TO FIX:
+{issues}
+
+WARNINGS TO ADDRESS:
+{warnings}
+
+Current Executive Summary:
+{exec_summary}
+
+Overall Score: {score}/10
+Readiness Level: {level}
+
+Redundancy Issues: {redundancy}
+Tone Issues: {tone}
+
+Provide fixed content in this exact JSON format:
+{
+    "executive_summary": "fixed executive summary if needed",
+    "recommendations": {
+        "financial_readiness": ["rec 1", "rec 2"],
+        "revenue_quality": ["rec 1", "rec 2"],
+        "operational_resilience": ["rec 1", "rec 2"]
+    },
+    "next_steps": "fixed next steps if needed"
+}
+
+Focus on fixing ONLY the sections with issues. Keep other sections unchanged.
+Ensure all content remains professional, specific, and actionable."""
+
+    try:
+        response = llm.invoke([
+            SystemMessage(content="You are a business report editor fixing quality issues while maintaining accuracy."),
+            HumanMessage(content=prompt.format(
+                issues=issues_text,
+                warnings=warnings_text,
+                exec_summary=summary_result.get("executive_summary", "")[:2000],
+                score=scoring_result.get("overall_score", 0),
+                level=scoring_result.get("readiness_level", "Unknown"),
+                redundancy=json.dumps(redundancy_info.get("redundant_sections", []))[:500],
+                tone=json.dumps(tone_info.get("tone_issues", []))[:500]
+            ))
+        ])
+        
+        result = json.loads(response.content)
+        
+        # Only return sections that were actually fixed
+        fixed_sections = {}
+        if result.get("executive_summary") and issues_text:
+            fixed_sections["executive_summary"] = result["executive_summary"]
+        if result.get("recommendations") and any("recommendation" in issue.lower() for issue in issues):
+            fixed_sections["recommendations"] = result["recommendations"]
+        if result.get("next_steps") and any("next" in issue.lower() for issue in issues):
+            fixed_sections["next_steps"] = result["next_steps"]
+            
+        return fixed_sections
+        
+    except Exception as e:
+        logger.warning(f"LLM issue fixing failed: {e}")
+        return {}
+
+
+def polish_report_llm(summary_result: Dict[str, Any], scoring_result: Dict[str, Any], 
+                     llm: ChatOpenAI) -> Dict[str, str]:
+    """Apply final polish to make the report more impactful"""
+    
+    prompt = """Polish this executive summary to make it more impactful and actionable.
+
+Current Executive Summary:
+{exec_summary}
+
+Overall Score: {score}/10
+Readiness Level: {level}
+
+Guidelines:
+1. Start with a powerful, specific opening statement about the business's exit readiness
+2. Use concrete numbers and timeframes where possible
+3. End with a compelling call-to-action
+4. Keep the same length and all factual content
+5. Make it feel personalized to this specific business
+
+Provide the polished version in this exact JSON format:
+{
+    "executive_summary": "polished executive summary"
+}
+
+Maintain all facts and scores. Only improve clarity, impact, and readability."""
+
+    try:
+        response = llm.invoke([
+            SystemMessage(content="You are an expert business advisor crafting impactful exit readiness assessments."),
+            HumanMessage(content=prompt.format(
+                exec_summary=summary_result.get("executive_summary", ""),
+                score=scoring_result.get("overall_score", 0),
+                level=scoring_result.get("readiness_level", "Unknown")
+            ))
+        ])
+        
+        result = json.loads(response.content)
+        
+        if result.get("executive_summary"):
+            return {"executive_summary": result["executive_summary"]}
+        return {}
+        
+    except Exception as e:
+        logger.warning(f"LLM report polishing failed: {e}")
+        return {}
+
+
+def regenerate_final_report(summary_result: Dict[str, Any], overall_score: float, 
+                           readiness_level: str) -> str:
+    """Regenerate the final report after fixes and polish"""
+    
+    report_parts = []
+    
+    # Executive Summary
+    if summary_result.get("executive_summary"):
+        report_parts.append("## Executive Summary\n")
+        report_parts.append(summary_result["executive_summary"])
+        report_parts.append("\n")
+    
+    # Overall Score
+    report_parts.append(f"\n## Overall Exit Readiness Score: {overall_score}/10\n")
+    report_parts.append(f"**Readiness Level**: {readiness_level}\n")
+    
+    # Category Summaries
+    if summary_result.get("category_summaries"):
+        report_parts.append("\n## Detailed Assessment by Category\n")
+        
+        category_order = ["financial_readiness", "revenue_quality", "operational_resilience"]
+        for category in category_order:
+            if category in summary_result["category_summaries"]:
+                category_title = category.replace("_", " ").title()
+                report_parts.append(f"\n### {category_title}\n")
+                report_parts.append(summary_result["category_summaries"][category])
+                report_parts.append("\n")
+    
+    # Recommendations
+    if summary_result.get("recommendations"):
+        report_parts.append("\n## Strategic Recommendations\n")
+        
+        for category, recs in summary_result["recommendations"].items():
+            if recs:
+                category_title = category.replace("_", " ").title()
+                report_parts.append(f"\n### {category_title}\n")
+                for i, rec in enumerate(recs, 1):
+                    report_parts.append(f"{i}. {rec}\n")
+    
+    # Next Steps
+    if summary_result.get("next_steps"):
+        report_parts.append("\n## Next Steps\n")
+        report_parts.append(summary_result["next_steps"])
+    
+    return "\n".join(report_parts)

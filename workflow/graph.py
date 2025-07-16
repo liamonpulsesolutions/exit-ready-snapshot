@@ -71,74 +71,76 @@ async def process_assessment_async(form_data: Dict[str, Any]) -> Dict[str, Any]:
     Async entry point for processing assessments.
     
     Args:
-        form_data: Raw form data from Tally/n8n
+        form_data: Dictionary containing the assessment form data
         
     Returns:
-        Complete assessment results ready for API response
+        Dictionary formatted according to the API contract
     """
-    logger.info(f"Starting workflow for UUID: {form_data.get('uuid')}")
+    start_time = datetime.now()
     
     try:
+        logger.info(f"Starting LangGraph workflow for UUID: {form_data.get('uuid')}")
+        
         # Create the workflow
         app = create_workflow()
         
         # Prepare initial state
         initial_state = {
-            "uuid": form_data.get("uuid", "unknown"),
+            "uuid": form_data.get("uuid"),
             "form_data": form_data,
             "locale": determine_locale(form_data.get("location", "Other")),
-            "current_stage": "starting",
+            "current_stage": "intake",
+            "error": None,
             "processing_time": {},
-            "messages": [f"Assessment started at {datetime.now().isoformat()}"],
-            # Extract business context for easy access
-            "industry": form_data.get("industry"),
-            "location": form_data.get("location"),
-            "revenue_range": form_data.get("revenue_range"),
-            "exit_timeline": form_data.get("exit_timeline"),
-            "years_in_business": form_data.get("years_in_business")
+            "messages": []
         }
         
         # Execute the workflow
-        start_time = datetime.now()
         result = await app.ainvoke(initial_state)
-        end_time = datetime.now()
         
-        # Log execution time
-        total_time = (end_time - start_time).total_seconds()
-        logger.info(f"Assessment completed for UUID: {form_data.get('uuid')} in {total_time:.2f}s")
+        # Calculate total processing time
+        total_time = (datetime.now() - start_time).total_seconds()
         
-        # Extract and format the final output
+        # Check if there was an error
         if result.get("error"):
+            logger.error(f"Workflow error: {result.get('error')}")
             return {
                 "uuid": form_data.get("uuid"),
                 "status": "error",
-                "error": result["error"],
+                "error": result.get("error"),
                 "locale": result.get("locale", "us")
             }
         
-        # Return the formatted response matching existing API contract
+        # Extract the final output from the workflow state
         final_output = result.get("final_output", {})
-        return {
+        
+        # Format the response according to the API contract
+        formatted_response = {
             "uuid": form_data.get("uuid"),
             "status": "completed",
+            "owner_name": final_output.get("owner_name", form_data.get("name", "")),
+            "email": final_output.get("email", form_data.get("email", "")),
+            "company_name": final_output.get("company_name", ""),
+            "industry": form_data.get("industry", ""),
+            "location": form_data.get("location", ""),
             "locale": result.get("locale", "us"),
-            "owner_name": final_output.get("owner_name", form_data.get("name")),
-            "email": final_output.get("email", form_data.get("email")),
-            "company_name": final_output.get("company_name"),
-            "industry": form_data.get("industry"),
-            "location": form_data.get("location"),
             "scores": final_output.get("scores", {}),
             "executive_summary": final_output.get("executive_summary", ""),
             "category_summaries": final_output.get("category_summaries", {}),
             "recommendations": final_output.get("recommendations", {}),
-            "next_steps": final_output.get("next_steps", ""),
+            "next_steps": final_output.get("next_steps", "Schedule a consultation to discuss your personalized Exit Value Growth Plan."),
             "content": final_output.get("content", ""),
             "processing_time": total_time,
             "metadata": {
                 "stages_completed": list(result.get("processing_time", {}).keys()),
-                "total_messages": len(result.get("messages", []))
+                "total_messages": len(result.get("messages", [])),
+                "stage_timings": result.get("processing_time", {})
             }
         }
+        
+        logger.info(f"Workflow completed successfully for UUID: {form_data.get('uuid')} in {total_time:.1f}s")
+        
+        return formatted_response
         
     except Exception as e:
         logger.error(f"Error in workflow: {str(e)}", exc_info=True)
