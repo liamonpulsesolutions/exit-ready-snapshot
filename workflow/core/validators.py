@@ -243,7 +243,15 @@ def scan_for_pii(content: Any) -> Dict[str, Any]:
             # Filter out false positives
             filtered_matches = []
             for match in matches:
-                if pii_type == 'ip_address':
+                # FIXED: Filter empty phone matches
+                if pii_type == 'phone':
+                    # Ensure the match has actual digits and isn't just formatting
+                    if match and len(str(match).strip()) > 0:
+                        # Extract just digits to check if it's a real phone number
+                        digits_only = re.sub(r'\D', '', str(match))
+                        if len(digits_only) >= 7:  # Minimum for a valid phone number
+                            filtered_matches.append(match)
+                elif pii_type == 'ip_address':
                     # Check if it's actually a score like "8.5.7.6"
                     parts = match.split('.')
                     try:
@@ -251,7 +259,11 @@ def scan_for_pii(content: Any) -> Dict[str, Any]:
                             continue  # Skip scores
                     except:
                         pass
-                filtered_matches.append(match)
+                    filtered_matches.append(match)
+                else:
+                    # For other types, include if not empty
+                    if match and str(match).strip():
+                        filtered_matches.append(match)
             
             if filtered_matches:
                 pii_found.append({
@@ -264,12 +276,71 @@ def scan_for_pii(content: Any) -> Dict[str, Any]:
     name_pattern = r'\b[A-Z][a-z]+\s+[A-Z][a-z]+\b'
     potential_names = re.findall(name_pattern, content_str)
     
-    # Filter out known safe phrases
+    # FIXED: Extended business term whitelist
     safe_phrases = [
+        # Original safe phrases
         'Exit Ready', 'Quick Wins', 'Strategic Priorities', 
         'Professional Services', 'Owner Dependence', 'Revenue Quality',
         'Financial Readiness', 'Operational Resilience', 'Growth Value',
-        'On Pulse', 'Exit Value', 'United States', 'Pacific Western'
+        'On Pulse', 'Exit Value', 'United States', 'Pacific Western',
+        # Additional business terms to whitelist
+        'Overall Score', 'Readiness Level', 'Needs Work', 'Exit Ready',
+        'Approaching Ready', 'Not Ready', 'Executive Summary', 'Your Score',
+        'Critical Focus', 'Next Steps', 'Your Business', 'Business Owner',
+        'Category Analysis', 'Industry Context', 'Market Context',
+        'Value Enhancement', 'Due Diligence', 'Exit Timeline', 'Exit Process',
+        'Business Assessment', 'Personalized Recommendations', 'Action Plan',
+        'Implementation Support', 'Confidential Assessment', 'Report Date',
+        'Proprietary Analysis', 'Market Conditions', 'Buyer Priorities',
+        'Industry Benchmark', 'Best Practices', 'Key Findings', 'Value Proposition',
+        'Competitive Position', 'Growth Potential', 'Unique Value',
+        'Customer Concentration', 'Recurring Revenue', 'Profit Margins',
+        'Management Team', 'Process Documentation', 'Knowledge Transfer',
+        'Risk Mitigation', 'Value Creation', 'Exit Strategy', 'Business Value',
+        'Sale Process', 'Transition Planning', 'Succession Planning',
+        'Strategic Improvements', 'Operational Efficiency', 'Financial Performance',
+        'Market Position', 'Competitive Advantage', 'Industry Standards',
+        'Performance Metrics', 'Success Factors', 'Risk Factors',
+        'Value Drivers', 'Growth Opportunities', 'Improvement Areas',
+        'Action Items', 'Time Frame', 'Resource Requirements',
+        'Expected Outcomes', 'Implementation Timeline', 'Priority Areas',
+        'Focus Areas', 'Development Plan', 'Enhancement Opportunities',
+        'Business Systems', 'Quality Standards', 'Client Relationships',
+        'Team Development', 'Leadership Transition', 'Organizational Structure',
+        'Business Processes', 'Standard Operating', 'Operating Procedures',
+        'Financial Systems', 'Management Systems', 'Control Systems',
+        'Performance Management', 'Quality Management', 'Risk Management',
+        'Change Management', 'Project Management', 'Time Management',
+        'Resource Management', 'Talent Management', 'Knowledge Management',
+        'Customer Management', 'Vendor Management', 'Contract Management',
+        'Data Management', 'Information Systems', 'Technology Systems',
+        'Business Intelligence', 'Market Intelligence', 'Competitive Intelligence',
+        'Strategic Planning', 'Business Planning', 'Financial Planning',
+        'Capacity Planning', 'Resource Planning', 'Succession Planning',
+        'Exit Planning', 'Transition Planning', 'Implementation Planning',
+        'Risk Assessment', 'Value Assessment', 'Market Assessment',
+        'Performance Assessment', 'Readiness Assessment', 'Financial Assessment',
+        'Operational Assessment', 'Strategic Assessment', 'Comprehensive Assessment',
+        'Industry Analysis', 'Market Analysis', 'Financial Analysis',
+        'Competitive Analysis', 'Gap Analysis', 'SWOT Analysis',
+        'Risk Analysis', 'Cost Analysis', 'Benefit Analysis',
+        'Investment Analysis', 'Return Analysis', 'Valuation Analysis',
+        'Due Diligence', 'Financial Audit', 'Operational Audit',
+        'Compliance Audit', 'Quality Audit', 'Process Audit',
+        'Internal Audit', 'External Audit', 'Third Party',
+        'Service Provider', 'Solution Provider', 'Strategic Partner',
+        'Business Partner', 'Joint Venture', 'Strategic Alliance',
+        'Industry Leader', 'Market Leader', 'Best Practice',
+        'Gold Standard', 'Industry Standard', 'Market Standard',
+        'Performance Standard', 'Quality Standard', 'Service Standard',
+        'Professional Standard', 'Ethical Standard', 'Compliance Standard',
+        'Regulatory Compliance', 'Legal Compliance', 'Industry Compliance',
+        'Quality Compliance', 'Safety Compliance', 'Environmental Compliance',
+        'Data Protection', 'Information Security', 'Cyber Security',
+        'Physical Security', 'Asset Protection', 'Intellectual Property',
+        'Trade Secrets', 'Proprietary Information', 'Confidential Information',
+        'Business Information', 'Market Information', 'Customer Information',
+        'Financial Information', 'Operating Information', 'Strategic Information'
     ]
     
     real_names = [name for name in potential_names if name not in safe_phrases]

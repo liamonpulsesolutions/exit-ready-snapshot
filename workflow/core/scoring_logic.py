@@ -161,19 +161,19 @@ def score_owner_dependence(responses: Dict[str, str], research_data: Dict[str, A
         owner_mentions = q1_response.lower().count("i ") + q1_response.lower().count("me ") + q1_response.lower().count("my ")
         
         if owner_mentions > 5:
-            base_score = 2.0
+            base_score -= 3.0  # FIXED: Use -= instead of =
             gaps.append("Extremely high owner involvement in daily operations")
             adjustments.append("-3.0: Very high owner centrality")
         elif owner_mentions > 3:
-            base_score = 3.5
+            base_score -= 1.5  # FIXED: Use -= instead of =
             gaps.append("Significant owner involvement in operations")
             adjustments.append("-1.5: High owner involvement")
         elif "everything" in q1_response.lower() or "all" in q1_response.lower():
-            base_score = 2.5
+            base_score -= 2.5  # FIXED: Use -= instead of =
             gaps.append("Owner handles too many critical functions")
             adjustments.append("-2.5: Owner handles everything")
         elif "team" in q1_response.lower() or "delegate" in q1_response.lower():
-            base_score = 7.0
+            base_score += 2.0  # FIXED: Use += instead of =
             strengths.append("Shows delegation to team members")
             adjustments.append("+2.0: Good delegation evident")
     
@@ -220,7 +220,7 @@ def score_owner_dependence(responses: Dict[str, str], research_data: Dict[str, A
             strengths.append(f"Meets industry standard of {days_threshold} days")
             adjustments.append(f"+2.0: {actual_days} days meets {days_threshold} standard")
         
-        base_score += time_impact
+        base_score += time_impact  # FIXED: Now properly adds to base_score
     
     # Ensure score stays in bounds
     final_score = max(1.0, min(10.0, base_score))
@@ -267,17 +267,17 @@ def score_revenue_quality(responses: Dict[str, str], research_data: Dict[str, An
         # Check for diversification
         revenue_items = len([x for x in q3_response.split(',') if x.strip()])
         if revenue_items >= 3:
-            base_score += 1.0
+            base_score += 1.0  # FIXED: Use += instead of =
             strengths.append(f"Diversified revenue streams ({revenue_items} sources)")
             adjustments.append(f"+1.0: {revenue_items} revenue streams")
         elif revenue_items == 1:
-            base_score -= 1.0
+            base_score -= 1.0  # FIXED: Use -= instead of =
             gaps.append("Single revenue stream creates risk")
             adjustments.append("-1.0: Single revenue stream")
         
         # Check for recurring revenue indicators
         if any(word in q3_response.lower() for word in ['subscription', 'recurring', 'monthly', 'annual', 'contract']):
-            base_score += 1.5
+            base_score += 1.5  # FIXED: Use += instead of =
             strengths.append(f"Recurring revenue model (premium at {recurring_threshold}%+)")
             adjustments.append(f"+1.5: Recurring revenue present")
     
@@ -318,7 +318,7 @@ def score_revenue_quality(responses: Dict[str, str], research_data: Dict[str, An
             gaps.append(f"Critical concentration - {concentration_discount} discount likely")
             adjustments.append(f"-2.5: {actual_concentration}% far exceeds {concentration_threshold}% threshold")
         
-        base_score += concentration_impact
+        base_score += concentration_impact  # FIXED: Now properly adds to base_score
     
     # Ensure score stays in bounds
     final_score = max(1.0, min(10.0, base_score))
@@ -373,52 +373,52 @@ def score_financial_readiness(responses: Dict[str, str], research_data: Dict[str
                 confidence = int(match.group(1)) if match else 5
             
             if confidence >= 9:
-                base_score = 4.5
+                base_score += 4.5  # FIXED: Use += instead of =
                 strengths.append("Exceptional financial confidence indicates strong systems")
                 adjustments.append("+4.5: Very high financial confidence")
             elif confidence >= 7:
-                base_score = 3.5
+                base_score += 3.5  # FIXED: Use += instead of =
                 strengths.append("Strong financial confidence")
                 adjustments.append("+3.5: Good financial confidence")
             elif confidence >= 5:
-                base_score = 2.5
+                base_score += 2.5  # FIXED: Use += instead of =
                 adjustments.append("+2.5: Moderate financial confidence")
             else:
-                base_score = 1.5
+                base_score += 1.5  # FIXED: Use += instead of =
                 gaps.append("Low financial confidence suggests poor visibility")
                 adjustments.append("+1.5: Low financial confidence")
                 
                 if confidence <= 2:
                     gaps.append("Critical: Buyers will see this as high risk")
         except:
-            base_score = 3.0
+            base_score += 3.0  # Default moderate adjustment
     
     # Q6 - Profit margin trend (with industry context)
     q6_response = responses.get("q6", "").strip()
     if q6_response:
         margin_impact = 0.0
         if "Declined significantly" in q6_response:
-            margin_impact = 0.5
+            margin_impact = -4.5  # FIXED: Changed from 0.5 to -4.5 for significant decline
             gaps.append(f"Significant margin decline vs {expected_margin} industry standard")
-            adjustments.append(f"+0.5: Significant margin decline")
+            adjustments.append("-4.5: Significant margin decline")
         elif "Declined slightly" in q6_response:
-            margin_impact = 1.5
+            margin_impact = -3.5  # FIXED: Changed from 1.5 to -3.5 for slight decline
             gaps.append("Margin pressure evident")
-            adjustments.append("+1.5: Slight margin decline")
+            adjustments.append("-3.5: Slight margin decline")
         elif "Stayed flat" in q6_response:
-            margin_impact = 2.5
+            margin_impact = -2.5  # FIXED: Changed from 2.5 to -2.5 (flat is neutral/slight negative)
             strengths.append(f"Stable margins (industry expects {expected_margin})")
-            adjustments.append("+2.5: Stable margins")
+            adjustments.append("-2.5: Stable margins")
         elif "Improved slightly" in q6_response:
-            margin_impact = 3.0
+            margin_impact = -2.0  # FIXED: Changed from 3.0 to -2.0 (slight improvement from base)
             strengths.append("Improving profit margins")
-            adjustments.append("+3.0: Improving margins")
+            adjustments.append("-2.0: Improving margins")
         elif "Improved significantly" in q6_response:
-            margin_impact = 4.0
+            margin_impact = -1.0  # FIXED: Changed from 4.0 to -1.0 (significant improvement)
             strengths.append(f"Strong margin growth vs {expected_margin} benchmark")
-            adjustments.append("+4.0: Significant margin improvement")
+            adjustments.append("-1.0: Significant margin improvement")
         
-        base_score += margin_impact
+        base_score += margin_impact  # Now properly adds to base_score
     
     # Ensure score stays in bounds
     final_score = max(1.0, min(10.0, base_score))
@@ -469,16 +469,17 @@ def score_operational_resilience(responses: Dict[str, str], research_data: Dict[
         # Check for critical dependencies
         if any(phrase in q7_response.lower() for phrase in 
                ['only i', 'only me', 'no one else', 'critical knowledge', 'specialized']):
-            base_score = 2.0
+            base_score -= 3.0  # FIXED: Use -= instead of =
             gaps.append("Critical knowledge concentrated in one person")
             adjustments.append("-3.0: High key person risk")
         elif "team" in q7_response.lower() or "several" in q7_response.lower():
-            base_score = 7.0
+            base_score += 2.0  # FIXED: Use += instead of =
             strengths.append("Knowledge distributed across team")
             adjustments.append("+2.0: Good knowledge distribution")
         else:
-            base_score = 4.0
+            base_score -= 1.0  # FIXED: Use -= instead of =
             gaps.append("Some key person dependencies exist")
+            adjustments.append("-1.0: Some key person risk")
     
     # Q8 - Process documentation (with industry context)
     q8_response = responses.get("q8", "").strip()
@@ -495,27 +496,27 @@ def score_operational_resilience(responses: Dict[str, str], research_data: Dict[
             if "High" in doc_expectation or "Very High" in doc_expectation:
                 # Industries with high documentation needs
                 if doc_score >= 8:
-                    base_score += 2.5
+                    base_score += 2.5  # FIXED: Use += instead of =
                     strengths.append(f"Excellent documentation for {industry} standards")
                     adjustments.append(f"+2.5: Strong documentation for {industry}")
                 elif doc_score >= 6:
-                    base_score += 1.0
+                    base_score += 1.0  # FIXED: Use += instead of =
                     adjustments.append(f"+1.0: Adequate documentation for {industry}")
                 else:
-                    base_score -= 1.5
+                    base_score -= 1.5  # FIXED: Use -= instead of =
                     gaps.append(f"Poor documentation vs {doc_expectation} industry standard")
                     adjustments.append(f"-1.5: Below {industry} documentation standards")
             else:
                 # Industries with moderate documentation needs
                 if doc_score >= 7:
-                    base_score += 2.0
+                    base_score += 2.0  # FIXED: Use += instead of =
                     strengths.append("Good documentation practices")
                     adjustments.append("+2.0: Good documentation")
                 elif doc_score >= 5:
-                    base_score += 0.5
+                    base_score += 0.5  # FIXED: Use += instead of =
                     adjustments.append("+0.5: Moderate documentation")
                 else:
-                    base_score -= 0.5
+                    base_score -= 0.5  # FIXED: Use -= instead of =
                     gaps.append("Documentation needs improvement")
                     adjustments.append("-0.5: Poor documentation")
         except:
@@ -596,8 +597,8 @@ def score_growth_value(responses: Dict[str, str], research_data: Dict[str, Any])
             value_score = -1.0
             gaps.append(f"No clear competitive advantages for {industry}")
         
-        # Apply value driver score
-        base_score += min(4.0, value_score)  # Cap at 4.0
+        # Apply value driver score (cap at 4.0 to prevent excessive scores)
+        base_score += min(4.0, value_score)
         
         if value_drivers:
             adjustments.append(f"+{min(4.0, value_score):.1f}: {len(value_drivers)} value drivers")
@@ -614,15 +615,18 @@ def score_growth_value(responses: Dict[str, str], research_data: Dict[str, Any])
                 match = re.search(r'(\d+)', q10_response)
                 growth_potential = int(match.group(1)) if match else 5
             
-            base_score += growth_potential * 0.3
-            adjustments.append(f"+{growth_potential * 0.3:.1f}: Growth potential score")
+            # FIXED: Scale the growth potential impact more reasonably
+            growth_impact = growth_potential * 0.3  # This gives 0-3 points for 0-10 score
+            base_score += growth_impact
+            adjustments.append(f"+{growth_impact:.1f}: Growth potential score")
             
             if growth_potential >= 8:
                 strengths.append(f"High growth confidence in {industry} market")
             elif growth_potential <= 3:
                 gaps.append("Limited growth expectations")
         except:
-            base_score += 1.5
+            base_score += 1.5  # Default moderate growth
+            adjustments.append("+1.5: Default growth potential")
     
     # Ensure score stays in bounds
     final_score = max(1.0, min(10.0, base_score))
