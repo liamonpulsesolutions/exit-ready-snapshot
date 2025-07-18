@@ -20,6 +20,7 @@ if not os.getenv('OPENAI_API_KEY'):
 from langchain_openai import ChatOpenAI
 from langchain.schema import SystemMessage, HumanMessage
 
+# Import enhanced scoring functions from the correct location
 from workflow.core.scoring_logic import (
     score_owner_dependence,
     score_revenue_quality,
@@ -27,7 +28,8 @@ from workflow.core.scoring_logic import (
     score_operational_resilience,
     score_growth_value,
     calculate_overall_score,
-    identify_focus_areas
+    identify_focus_areas,
+    extract_industry_benchmarks  # Import the benchmark extraction function
 )
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,10 @@ def generate_category_insights(
 ) -> str:
     """Generate 2-3 sentences of intelligent commentary for a scoring category"""
     
+    # Extract industry-specific benchmarks for context
+    industry = responses.get("industry", "Professional Services")
+    benchmarks = extract_industry_benchmarks(research_data, industry)
+    
     # Create context-specific prompts for each category
     category_prompts = {
         "owner_dependence": f"""Analyze this owner dependence score and provide 2-3 sentences of insight.
@@ -49,42 +55,48 @@ def generate_category_insights(
 Score: {score_data['score']}/10
 Strengths: {', '.join(score_data.get('strengths', [])[:2])}
 Gaps: {', '.join(score_data.get('gaps', [])[:2])}
-Industry benchmark: Business should run 14+ days without owner
+Industry benchmark: Business should run {benchmarks.get('owner_independence_days', 14)}+ days without owner
+Industry impact: {benchmarks.get('owner_dependence_discount', '20-30%')} discount for high dependence
 
 Key responses:
 - Role: "{responses.get('q1', '')[:100]}..."
 - Time away: "{responses.get('q2', '')}"
 
-Provide insight about what this score means for their exit readiness. Be specific to their situation.""",
+Industry context from research: {score_data.get('industry_context', {}).get('benchmark', '')}
+
+Provide insight about what this score means for their exit readiness in the {industry} industry.""",
 
         "revenue_quality": f"""Analyze this revenue quality score and provide 2-3 sentences of insight.
 
 Score: {score_data['score']}/10
 Strengths: {', '.join(score_data.get('strengths', [])[:2])}
 Gaps: {', '.join(score_data.get('gaps', [])[:2])}
-Industry benchmark: 60%+ recurring revenue for premium valuations
+Industry benchmark: <{benchmarks.get('concentration_threshold', 25)}% customer concentration
+Recurring revenue expectation: {benchmarks.get('recurring_threshold', 60)}%+ for {benchmarks.get('recurring_premium', '1.5-2.0x')} premium
 
 Key responses:
 - Revenue model: "{responses.get('q3', '')[:100]}..."
 - Customer concentration: "{responses.get('q4', '')}"
 
-Market data: {research_data.get('valuation_benchmarks', {}).get('recurring_premium', 'Premium for recurring revenue')}
+Market data: {research_data.get('valuation_benchmarks', {}).get('recurring_revenue', {}).get('premium', 'Premium for recurring revenue')}
+Industry context: {score_data.get('industry_context', {}).get('benchmark', '')}
 
-Provide insight about how their revenue structure affects valuation.""",
+Provide insight about how their revenue structure affects valuation in {industry}.""",
 
         "financial_readiness": f"""Analyze this financial readiness score and provide 2-3 sentences of insight.
 
 Score: {score_data['score']}/10
 Strengths: {', '.join(score_data.get('strengths', [])[:2])}
 Gaps: {', '.join(score_data.get('gaps', [])[:2])}
+Expected margins: {benchmarks.get('expected_margin', '15-20%')} EBITDA for {industry}
 
 Key responses:
 - Clean financials confidence: "{responses.get('q5', '')}"
 - Profit margins: "{responses.get('q6', '')}"
 
-Industry context: Buyers expect 15-20% EBITDA margins for {responses.get('industry', 'this industry')}
+Industry context: {score_data.get('industry_context', {}).get('benchmark', '')}
 
-Provide insight about their financial preparedness for due diligence.""",
+Provide insight about their financial preparedness for due diligence in the {industry} sector.""",
 
         "operational_resilience": f"""Analyze this operational resilience score and provide 2-3 sentences of insight.
 
@@ -96,7 +108,9 @@ Key responses:
 - Critical dependencies: "{responses.get('q7', '')[:100]}..."
 - Documentation level: "{responses.get('q8', '')}"
 
-Provide insight about operational transferability and buyer confidence.""",
+Industry expectation: {score_data.get('industry_context', {}).get('benchmark', '')}
+
+Provide insight about operational transferability and buyer confidence for a {industry} business.""",
 
         "growth_value": f"""Analyze this growth value score and provide 2-3 sentences of insight.
 
@@ -108,16 +122,17 @@ Key responses:
 - Unique value: "{responses.get('q9', '')[:100]}..."
 - Growth potential: "{responses.get('q10', '')}"
 
-Market trend: {research_data.get('market_conditions', {}).get('key_trend', 'Technology integration valued')}
+Market trend: {research_data.get('market_conditions', {}).get('key_trend', {}).get('trend', 'Technology integration valued')}
+Industry drivers: {score_data.get('industry_context', {}).get('key_value_drivers', [])}
 
-Provide insight about their competitive positioning and growth story."""
+Provide insight about their competitive positioning and growth story in {industry}."""
     }
     
     prompt = category_prompts.get(category, "Provide 2-3 sentences of insight about this score.")
     
     try:
         response = llm.invoke([
-            SystemMessage(content="You are an M&A advisor providing insights on business exit readiness. Be concise and specific."),
+            SystemMessage(content="You are an M&A advisor providing insights on business exit readiness. Be concise and specific. Reference industry-specific benchmarks where relevant."),
             HumanMessage(content=prompt)
         ])
         
@@ -126,19 +141,20 @@ Provide insight about their competitive positioning and growth story."""
         logger.error(f"LLM insight generation failed for {category}: {e}")
         # Fallback to template-based insight
         if score_data['score'] >= 7:
-            return f"Strong performance in {category.replace('_', ' ')} positions you well for exit. {score_data.get('strengths', [''])[0]}."
+            return f"Strong performance in {category.replace('_', ' ')} positions you well for exit in {industry}. {score_data.get('strengths', [''])[0]}."
         elif score_data['score'] >= 4:
-            return f"Moderate {category.replace('_', ' ')} requires targeted improvements. Focus on addressing: {score_data.get('gaps', [''])[0]}."
+            return f"Moderate {category.replace('_', ' ')} requires targeted improvements for {industry} standards. Focus on addressing: {score_data.get('gaps', [''])[0]}."
         else:
-            return f"Significant gaps in {category.replace('_', ' ')} could impact valuation. {score_data.get('gaps', [''])[0]}."
+            return f"Significant gaps in {category.replace('_', ' ')} could impact valuation in {industry}. {score_data.get('gaps', [''])[0]}."
 
 
 def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Enhanced scoring node with LLM interpretation for each category.
+    Now uses dynamic industry benchmarking from research data.
     
     This node:
-    1. Uses mechanical scoring for accuracy
+    1. Uses mechanical scoring with industry-specific benchmarks
     2. Adds LLM interpretation for each category
     3. Maintains all existing scoring logic
     4. Provides richer insights for downstream nodes
@@ -175,20 +191,26 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         
         logger.info(f"Scoring {len(responses)} responses for {responses['industry']}")
         
-        # Extract research data
+        # Extract research data - ensure it has the right structure
         research_data = {
             "valuation_benchmarks": research_result.get("valuation_benchmarks", {}),
             "improvement_strategies": research_result.get("improvement_strategies", {}),
             "market_conditions": research_result.get("market_conditions", {}),
             "industry_context": research_result.get("industry_context", {}),
+            "industry_specific_thresholds": research_result.get("industry_specific_thresholds", {}),
             "citations": research_result.get("citations", [])
         }
         
-        # Score each category with LLM insights
+        # Log extracted benchmarks for debugging
+        industry = responses.get("industry", "Professional Services")
+        benchmarks = extract_industry_benchmarks(research_data, industry)
+        logger.info(f"Extracted benchmarks for {industry}: {benchmarks}")
+        
+        # Score each category with dynamic benchmarks
         category_scores = {}
         
-        # 1. Score Owner Dependence
-        logger.info("Scoring owner dependence...")
+        # 1. Score Owner Dependence (with industry-specific days threshold)
+        logger.info("Scoring owner dependence with dynamic benchmarks...")
         owner_score = score_owner_dependence(responses, research_data)
         
         # Add LLM insight
@@ -198,10 +220,10 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         owner_score["insight"] = owner_insight
         
         category_scores["owner_dependence"] = owner_score
-        logger.info(f"Owner dependence: {owner_score['score']}/10")
+        logger.info(f"Owner dependence: {owner_score['score']}/10 (threshold: {benchmarks['owner_independence_days']} days)")
         
-        # 2. Score Revenue Quality
-        logger.info("Scoring revenue quality...")
+        # 2. Score Revenue Quality (with industry-specific concentration threshold)
+        logger.info("Scoring revenue quality with dynamic benchmarks...")
         revenue_score = score_revenue_quality(responses, research_data)
         
         # Add LLM insight
@@ -211,10 +233,10 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         revenue_score["insight"] = revenue_insight
         
         category_scores["revenue_quality"] = revenue_score
-        logger.info(f"Revenue quality: {revenue_score['score']}/10")
+        logger.info(f"Revenue quality: {revenue_score['score']}/10 (concentration threshold: {benchmarks['concentration_threshold']}%)")
         
-        # 3. Score Financial Readiness
-        logger.info("Scoring financial readiness...")
+        # 3. Score Financial Readiness (with industry-specific margin expectations)
+        logger.info("Scoring financial readiness with dynamic benchmarks...")
         financial_score = score_financial_readiness(responses, research_data)
         
         # Add LLM insight
@@ -224,10 +246,10 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         financial_score["insight"] = financial_insight
         
         category_scores["financial_readiness"] = financial_score
-        logger.info(f"Financial readiness: {financial_score['score']}/10")
+        logger.info(f"Financial readiness: {financial_score['score']}/10 (expected margins: {benchmarks['expected_margin']})")
         
-        # 4. Score Operational Resilience
-        logger.info("Scoring operational resilience...")
+        # 4. Score Operational Resilience (with industry-specific documentation standards)
+        logger.info("Scoring operational resilience with dynamic benchmarks...")
         operational_score = score_operational_resilience(responses, research_data)
         
         # Add LLM insight
@@ -239,8 +261,8 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         category_scores["operational_resilience"] = operational_score
         logger.info(f"Operational resilience: {operational_score['score']}/10")
         
-        # 5. Score Growth Value
-        logger.info("Scoring growth value...")
+        # 5. Score Growth Value (with industry-specific value drivers)
+        logger.info("Scoring growth value with dynamic benchmarks...")
         growth_score = score_growth_value(responses, research_data)
         
         # Add LLM insight
@@ -279,12 +301,13 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
             if data.get('score', 10) < 5:
                 critical_gaps.extend(gaps[:2])
             
-            # Collect insights
+            # Collect insights with industry context
             if insight:
                 key_insights.append({
                     "category": category,
                     "score": data.get('score'),
-                    "insight": insight
+                    "insight": insight,
+                    "industry_context": data.get('industry_context', {})
                 })
         
         # Prepare enhanced scoring result
@@ -297,12 +320,15 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "top_strengths": all_strengths[:5],
             "critical_gaps": critical_gaps[:3],
             "key_insights": key_insights,
+            "industry_benchmarks_applied": benchmarks,  # Include applied benchmarks
             "scoring_metadata": {
                 "total_categories": len(category_scores),
                 "highest_score": max(d['score'] for d in category_scores.values()),
                 "lowest_score": min(d['score'] for d in category_scores.values()),
-                "research_quality": research_result.get("data_source", "unknown"),
-                "has_llm_insights": True
+                "research_quality": research_result.get("citation_quality", {}).get("source", "unknown"),
+                "has_llm_insights": True,
+                "has_dynamic_benchmarks": True,
+                "industry": industry
             }
         }
         
@@ -319,7 +345,8 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
             f"Enhanced scoring completed in {processing_time:.2f}s - "
             f"Overall: {overall_score}/10 ({readiness_level}), "
             f"Focus: {focus_areas.get('primary', {}).get('category', 'none')}, "
-            f"Insights: {len(key_insights)}"
+            f"Insights: {len(key_insights)}, "
+            f"Industry: {industry}"
         )
         
         logger.info(f"=== ENHANCED SCORING NODE COMPLETED - {processing_time:.2f}s ===")

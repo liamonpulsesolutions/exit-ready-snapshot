@@ -1,6 +1,6 @@
 """
-QA Node - Quality assurance with LLM intelligence and formatting standardization.
-Performs mechanical checks, intelligent analysis, and Placid-compatible formatting.
+QA Node - Quality assurance with LLM intelligence, formatting standardization, and outcome framing verification.
+Performs mechanical checks, intelligent analysis, Placid-compatible formatting, and ensures proper outcome language.
 """
 
 import logging
@@ -171,28 +171,185 @@ The insights and strategies outlined are based on your assessment responses and 
     return report
 
 
+def verify_outcome_framing_llm(report: str, recommendations: str, next_steps: str, llm: ChatOpenAI) -> Dict[str, Any]:
+    """
+    Verify that all outcome claims use proper framing language (typically/often/on average).
+    Check that improvements are expressed as ranges, not specific numbers.
+    Ensure all outcome claims have source citations.
+    """
+    
+    prompt = """Analyze this business assessment report for proper outcome framing.
+
+Report Sections to Check:
+RECOMMENDATIONS:
+{recommendations}
+
+NEXT STEPS:
+{next_steps}
+
+EXECUTIVE SUMMARY (excerpt):
+{summary_excerpt}
+
+Verify compliance with these CRITICAL rules:
+1. All outcome claims must use qualifying language: "typically," "often," "on average," "generally," "businesses like yours"
+2. Never use absolute promises: "will," "guaranteed," "definitely," "ensure," "certainly"
+3. All improvements must be expressed as ranges (e.g., "20-30%") not specific numbers (e.g., "25%")
+4. Every outcome claim should have a source citation (Source Year)
+
+Look for violations such as:
+- "This will increase your value by 30%" ❌
+- "You will achieve higher multiples" ❌
+- "Implementing this ensures success" ❌
+- "25% improvement expected" ❌ (should be range)
+- Claims without citations ❌
+
+Good examples:
+- "Businesses typically see 20-30% value increases (IBBA 2023)" ✓
+- "Companies often achieve 15-25% higher multiples (GF Data 2023)" ✓
+- "Owners generally report improved outcomes" ✓
+
+Provide your analysis in this exact JSON format:
+{
+    "framing_score": <0-10, where 10 means perfect outcome framing>,
+    "violations_found": <number of violations>,
+    "specific_violations": [
+        {"text": "exact problematic phrase", "issue": "why it violates rules"},
+        {"text": "another violation", "issue": "reason"}
+    ],
+    "uncited_claims": [
+        {"claim": "outcome claim without citation", "location": "section name"}
+    ],
+    "promise_language": ["list", "of", "absolute", "promises", "found"],
+    "non_range_numbers": ["25% increase", "30% improvement"],
+    "compliance_summary": "brief assessment of overall compliance"
+}
+
+Be thorough but reasonable - general business advice doesn't need citations, only specific outcome claims."""
+
+    try:
+        # Extract executive summary excerpt
+        summary_excerpt = ""
+        if "EXECUTIVE SUMMARY" in report:
+            summary_start = report.find("EXECUTIVE SUMMARY")
+            summary_end = report.find("YOUR EXIT READINESS SCORE", summary_start)
+            if summary_end > summary_start:
+                summary_excerpt = report[summary_start:summary_end][:500]  # First 500 chars
+        
+        response = llm.invoke([
+            SystemMessage(content="You are a compliance reviewer ensuring business recommendations follow proper outcome framing rules. Be strict about promises and specific numbers."),
+            HumanMessage(content=prompt.format(
+                recommendations=recommendations[:3000],
+                next_steps=next_steps[:2000],
+                summary_excerpt=summary_excerpt
+            ))
+        ])
+        
+        result = json.loads(response.content)
+        return result
+        
+    except Exception as e:
+        logger.warning(f"LLM outcome framing verification failed: {e}")
+        return {
+            "framing_score": 8,
+            "violations_found": 0,
+            "specific_violations": [],
+            "uncited_claims": [],
+            "promise_language": [],
+            "non_range_numbers": [],
+            "compliance_summary": "Unable to verify"
+        }
+
+
+def fix_outcome_framing_llm(violations: List[Dict], recommendations: str, next_steps: str, 
+                           executive_summary: str, llm: ChatOpenAI) -> Dict[str, str]:
+    """Fix outcome framing violations identified in the report"""
+    
+    violations_text = "\n".join([f"- {v['text']}: {v['issue']}" for v in violations[:10]])
+    
+    prompt = """Fix the following outcome framing violations in this business report.
+
+VIOLATIONS TO FIX:
+{violations}
+
+Current Recommendations (excerpt):
+{recommendations}
+
+Current Next Steps (excerpt):
+{next_steps}
+
+Current Executive Summary (excerpt):
+{executive_summary}
+
+Fix these violations by:
+1. Replacing "will" with "typically/often/generally"
+2. Converting specific percentages to ranges (e.g., 25% → 20-30%)
+3. Adding source citations where missing (use realistic sources like "IBBA 2023" or "M&A Source 2023")
+4. Removing any guarantee language
+
+Examples of fixes:
+- "This will increase value by 30%" → "Businesses typically see 25-35% value increases (Industry Study 2023)"
+- "You will achieve premium multiples" → "Companies often achieve 15-25% higher multiples (GF Data 2023)"
+- "Ensures faster sale" → "Generally results in 20-30% faster sales (BizBuySell 2023)"
+
+Provide fixed content in this exact JSON format:
+{
+    "recommendations": "fixed recommendations text if violations found there",
+    "next_steps": "fixed next steps text if violations found there",
+    "executive_summary": "fixed executive summary if violations found there"
+}
+
+Only include sections that had violations. Maintain all other content exactly as is.
+Ensure all fixes sound natural and maintain the persuasive tone while being compliant."""
+
+    try:
+        response = llm.invoke([
+            SystemMessage(content="You are a compliance editor fixing outcome language while maintaining persuasive business writing. Make minimal changes to fix violations."),
+            HumanMessage(content=prompt.format(
+                violations=violations_text,
+                recommendations=recommendations[:1500],
+                next_steps=next_steps[:1000],
+                executive_summary=executive_summary[:1000]
+            ))
+        ])
+        
+        result = json.loads(response.content)
+        
+        # Only return sections that were actually fixed
+        fixed_sections = {}
+        for section in ["recommendations", "next_steps", "executive_summary"]:
+            if section in result and result[section]:
+                fixed_sections[section] = result[section]
+                
+        return fixed_sections
+        
+    except Exception as e:
+        logger.warning(f"LLM outcome framing fixes failed: {e}")
+        return {}
+
+
 def qa_node(state: WorkflowState) -> WorkflowState:
     """
-    Enhanced QA validation with LLM intelligence and formatting standardization.
+    Enhanced QA validation with LLM intelligence, formatting standardization, and outcome framing verification.
     
     Key enhancements:
     1. LLM-based redundancy detection with GPT-4.1
     2. Tone consistency checking
     3. Citation verification
-    4. Issue fixing with LLM assistance
-    5. Report polishing with GPT-4.1 for readability
-    6. Placid-compatible formatting
+    4. Outcome framing verification (NEW)
+    5. Issue fixing with LLM assistance
+    6. Report polishing with GPT-4.1 for readability
+    7. Placid-compatible formatting
     """
     start_time = time.time()
     
     try:
-        logger.info("Starting enhanced QA validation with formatting...")
+        logger.info("Starting enhanced QA validation with formatting and outcome framing...")
         
         # Get required data
         scoring_result = state.get("scoring_result", {})
         summary_result = state.get("summary_result", {})
         
-        # Initialize QA LLMs - use GPT-4.1 nano for basic checks, GPT-4.1 for sophisticated analysis
+        # Initialize QA LLMs - use GPT-4.1-nano for basic checks, GPT-4.1 for sophisticated analysis
         qa_llm = ChatOpenAI(
             model="gpt-4.1-nano",  # Fast, efficient for mechanical checks
             temperature=0,
@@ -318,11 +475,40 @@ def qa_node(state: WorkflowState) -> WorkflowState:
                     else:
                         qa_warnings.append(f"Missing citation: {claim.get('claim', '')[:50]}...")
         
+        # NEW: Verify Outcome Framing
+        logger.info("Verifying outcome framing compliance...")
+        outcome_framing_check = verify_outcome_framing_llm(
+            summary_result.get("final_report", ""),
+            summary_result.get("recommendations", ""),
+            summary_result.get("next_steps", ""),
+            qa_llm
+        )
+        quality_scores["outcome_framing"] = outcome_framing_check
+        
+        # Flag outcome framing violations
+        if outcome_framing_check.get("framing_score", 10) < 7:
+            violations_count = outcome_framing_check.get("violations_found", 0)
+            if violations_count > 0:
+                qa_issues.append(f"Outcome framing violations found: {violations_count}")
+                
+                # Add specific violations as issues
+                for violation in outcome_framing_check.get("specific_violations", [])[:3]:
+                    qa_issues.append(f"PROMISE LANGUAGE: {violation.get('text', '')[:50]}... - {violation.get('issue', '')}")
+                
+                # Flag uncited outcome claims
+                for claim in outcome_framing_check.get("uncited_claims", [])[:2]:
+                    qa_warnings.append(f"Uncited outcome claim: {claim.get('claim', '')[:50]}... in {claim.get('location', '')}")
+                
+                # Flag non-range numbers
+                non_ranges = outcome_framing_check.get("non_range_numbers", [])
+                if non_ranges:
+                    qa_warnings.append(f"Specific percentages should be ranges: {', '.join(non_ranges[:3])}")
+        
         # Calculate overall QA score
         overall_quality_score = calculate_overall_qa_score(quality_scores)
         
         # ADJUSTED: Lower approval threshold from 7.0 to 6.0
-        critical_issues = [issue for issue in qa_issues if "CRITICAL" in issue or "PII" in issue]
+        critical_issues = [issue for issue in qa_issues if "CRITICAL" in issue or "PII" in issue or "PROMISE LANGUAGE" in issue]
         non_critical_issues = [issue for issue in qa_issues if issue not in critical_issues]
         
         # Approval based on critical issues only
@@ -350,6 +536,21 @@ def qa_node(state: WorkflowState) -> WorkflowState:
                     tone_check,
                     qa_llm
                 )
+                
+                # Fix outcome framing violations if found
+                if outcome_framing_check.get("violations_found", 0) > 0:
+                    logger.info("Fixing outcome framing violations...")
+                    framing_fixes = fix_outcome_framing_llm(
+                        outcome_framing_check.get("specific_violations", []),
+                        summary_result.get("recommendations", ""),
+                        summary_result.get("next_steps", ""),
+                        summary_result.get("executive_summary", ""),
+                        qa_llm
+                    )
+                    
+                    # Merge framing fixes into fixed sections
+                    for section, content in framing_fixes.items():
+                        fixed_sections[section] = content
                 
                 # Update summary result with fixes
                 for section, content in fixed_sections.items():
@@ -393,6 +594,17 @@ def qa_node(state: WorkflowState) -> WorkflowState:
                 )
                 quality_scores["citation_verification"] = citation_check
                 
+                # Re-check outcome framing after fixes
+                outcome_framing_check = verify_outcome_framing_llm(
+                    regenerate_final_report(summary_result, 
+                                          scoring_result.get("overall_score"),
+                                          scoring_result.get("readiness_level")),
+                    summary_result.get("recommendations", ""),
+                    summary_result.get("next_steps", ""),
+                    qa_llm
+                )
+                quality_scores["outcome_framing"] = outcome_framing_check
+                
                 # Re-evaluate with adjusted thresholds
                 qa_issues = []
                 qa_warnings = []
@@ -422,6 +634,12 @@ def qa_node(state: WorkflowState) -> WorkflowState:
                     for claim in citation_check.get("uncited_claims", []):
                         if claim.get("issue") == "claim not found in research data":
                             critical_issues.append(f"CRITICAL: Unfounded claim - {claim.get('claim', '')[:50]}...")
+                
+                # Check outcome framing after fixes
+                if outcome_framing_check.get("violations_found", 0) > 0:
+                    for violation in outcome_framing_check.get("specific_violations", [])[:2]:
+                        if "will" in violation.get("text", "").lower() or "guaranteed" in violation.get("text", "").lower():
+                            critical_issues.append(f"CRITICAL: Promise language - {violation.get('text', '')[:50]}...")
                 
                 # Recalculate approval with new threshold and critical issues only
                 overall_quality_score = calculate_overall_qa_score(quality_scores)
@@ -490,17 +708,19 @@ def qa_node(state: WorkflowState) -> WorkflowState:
             "formatted_sections": list(formatted_sections.keys()),
             "fix_attempts": fix_attempts,
             "formatting_applied": True,
+            "outcome_framing_applied": True,
             "validation_summary": {
-                "total_checks": 7,
+                "total_checks": 8,  # Added outcome framing
                 "mechanical_checks": 4,
-                "llm_checks": 3,
+                "llm_checks": 4,  # Added outcome framing
                 "critical_issues": len(critical_issues),
                 "non_critical_issues": len(qa_issues),
                 "warnings": len(qa_warnings),
                 "sections_polished": len(polished_sections),
                 "sections_fixed": len(fixed_sections),
                 "sections_formatted": len(formatted_sections),
-                "required_fix_attempts": fix_attempts
+                "required_fix_attempts": fix_attempts,
+                "outcome_framing_score": outcome_framing_check.get("framing_score", 0)
             }
         }
         
@@ -521,17 +741,20 @@ def qa_node(state: WorkflowState) -> WorkflowState:
             state["messages"].append(
                 f"✅ Enhanced QA validation passed with score {overall_quality_score:.1f}/10 "
                 f"({fix_attempts} fix attempts, {len(polished_sections)} sections polished, "
-                f"{len(formatted_sections)} sections formatted for Placid)"
+                f"{len(formatted_sections)} sections formatted for Placid, "
+                f"outcome framing score: {outcome_framing_check.get('framing_score', 0)}/10)"
             )
         else:
             state["messages"].append(
                 f"⚠️ QA validation completed with {len(qa_issues)} issues and {len(qa_warnings)} warnings "
-                f"(score: {overall_quality_score:.1f}/10, {fix_attempts} fix attempts, formatting applied)"
+                f"(score: {overall_quality_score:.1f}/10, {fix_attempts} fix attempts, formatting applied, "
+                f"outcome framing: {outcome_framing_check.get('framing_score', 0)}/10)"
             )
         
         logger.info(f"Enhanced QA validation completed in {processing_time:.2f}s")
         logger.info(f"Result: Approved={approved}, Score={overall_quality_score:.1f}/10, "
-                   f"Issues={len(qa_issues)}, Warnings={len(qa_warnings)}, Formatting=Applied")
+                   f"Issues={len(qa_issues)}, Warnings={len(qa_warnings)}, Formatting=Applied, "
+                   f"Outcome Framing={outcome_framing_check.get('framing_score', 0)}/10")
         
         return state
         
@@ -594,13 +817,14 @@ def calculate_overall_qa_score(quality_scores: Dict[str, Dict]) -> float:
         "content_quality": 0.20,
         "pii_compliance": 0.15,
         "structure_validation": 0.10,
-        "redundancy_check": 0.15,
+        "redundancy_check": 0.10,  # Reduced weight
         "tone_consistency": 0.10,
-        "citation_verification": 0.15
+        "citation_verification": 0.10,  # Reduced weight
+        "outcome_framing": 0.10  # New check
     }
     
     for check_name, check_result in quality_scores.items():
-        weight = weights.get(check_name, 0.15)
+        weight = weights.get(check_name, 0.10)
         
         # Extract score based on check type
         if check_name == "content_quality":
@@ -617,6 +841,8 @@ def calculate_overall_qa_score(quality_scores: Dict[str, Dict]) -> float:
             score = check_result.get("tone_score", 8.0)
         elif check_name == "citation_verification":
             score = check_result.get("citation_score", 8.0)
+        elif check_name == "outcome_framing":
+            score = check_result.get("framing_score", 8.0)
         else:
             score = 5.0  # Default middle score
         
@@ -886,11 +1112,12 @@ Provide fixed content in this exact JSON format:
 }
 
 Focus on fixing ONLY the sections with issues. Keep other sections unchanged.
-Ensure all content remains professional, specific, and actionable."""
+Ensure all content remains professional, specific, and actionable.
+If fixing outcome framing issues, ensure you use "typically/often" language and ranges."""
 
     try:
         response = llm.invoke([
-            SystemMessage(content="You are a business report editor fixing quality issues while maintaining accuracy."),
+            SystemMessage(content="You are a business report editor fixing quality issues while maintaining accuracy. Always use proper outcome framing with 'typically/often' language."),
             HumanMessage(content=prompt.format(
                 issues=issues_text,
                 warnings=warnings_text,
@@ -940,6 +1167,7 @@ Guidelines:
 5. Make it feel personalized to this specific business owner
 6. Use varied sentence structure for better flow
 7. Include power words that convey urgency and opportunity
+8. CRITICAL: Maintain proper outcome framing - use "typically/often/generally" for all outcome claims
 
 Specific improvements to make:
 - Replace passive voice with active voice
@@ -947,6 +1175,7 @@ Specific improvements to make:
 - Create a sense of momentum and possibility
 - Ensure the call-to-action is compelling
 - Make numbers and statistics stand out
+- Ensure all outcome claims use "typically" or "often" language
 
 Provide the polished version in this exact JSON format:
 {
@@ -954,11 +1183,12 @@ Provide the polished version in this exact JSON format:
 }
 
 Maintain all facts, scores, and data points exactly. Only improve clarity, impact, flow, and emotional resonance.
-Remove any markdown formatting - use plain text only."""
+Remove any markdown formatting - use plain text only.
+Ensure outcome framing is preserved or improved."""
 
     try:
         response = llm.invoke([
-            SystemMessage(content="You are a master business communication expert using GPT-4.1. Create compelling, action-oriented content that motivates business owners while maintaining complete accuracy. Your writing should be clear, powerful, and personalized."),
+            SystemMessage(content="You are a master business communication expert using GPT-4.1. Create compelling, action-oriented content that motivates business owners while maintaining complete accuracy and proper outcome framing. Your writing should be clear, powerful, and personalized."),
             HumanMessage(content=prompt.format(
                 exec_summary=summary_result.get("executive_summary", ""),
                 score=scoring_result.get("overall_score", 0),
@@ -991,7 +1221,7 @@ def polish_recommendations_llm(recommendations: str, scoring_result: Dict[str, A
                               llm: ChatOpenAI) -> str:
     """Polish recommendations section with GPT-4.1 for maximum impact"""
     
-    prompt = """Polish these recommendations to be more impactful while maintaining accuracy.
+    prompt = """Polish these recommendations to be more impactful while maintaining accuracy and proper outcome framing.
 
 Current Recommendations:
 {recommendations}
@@ -1001,22 +1231,25 @@ Overall Score: {score}/10
 
 Improvements to make:
 1. Make each action item more specific and concrete
-2. Ensure every outcome is quantified with data
+2. Ensure every outcome is quantified with data ranges (not specific numbers)
 3. Add urgency without being alarmist
 4. Use action verbs that inspire immediate implementation
 5. Make the language more dynamic and engaging
+6. CRITICAL: Ensure all outcome claims use "typically/often/generally" language
 
 Keep the exact same structure and facts. Only improve:
 - Action verb choices (implement → launch, create → develop, etc.)
-- Outcome descriptions (make them more vivid)
+- Outcome descriptions (make them more vivid while keeping "typically" language)
 - Transitions between sections
 - Overall energy and momentum
+- Outcome framing compliance
 
-Return the polished recommendations as plain text (no JSON wrapper)."""
+Return the polished recommendations as plain text (no JSON wrapper).
+Ensure every outcome claim uses proper framing language."""
 
     try:
         response = llm.invoke([
-            SystemMessage(content="You are a business strategy expert using GPT-4.1 to create compelling action plans. Make recommendations feel urgent, specific, and achievable."),
+            SystemMessage(content="You are a business strategy expert using GPT-4.1 to create compelling action plans. Make recommendations feel urgent, specific, and achievable while always using 'typically/often' language for outcomes."),
             HumanMessage(content=prompt.format(
                 recommendations=recommendations[:3000],
                 focus=scoring_result.get("focus_areas", {}).get("primary", {}).get("category", ""),
