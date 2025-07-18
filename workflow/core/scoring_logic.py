@@ -1,10 +1,90 @@
 """
-Pure scoring functions extracted from CrewAI agents.
-No tool wrappers, just business logic.
+Pure scoring functions with dynamic industry benchmarking.
+Uses research data to apply industry-specific thresholds.
 """
 
 import re
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
+
+
+def extract_industry_benchmarks(research_data: Dict[str, Any], industry: str) -> Dict[str, Any]:
+    """
+    Extract industry-specific benchmarks from research data.
+    Falls back to generic values if specific data not found.
+    """
+    benchmarks = {}
+    
+    # Try to get from research data first
+    valuation_data = research_data.get('valuation_benchmarks', {})
+    
+    # Extract owner dependence days threshold
+    owner_data = valuation_data.get('owner_dependence', {})
+    if isinstance(owner_data, dict):
+        days_str = owner_data.get('days_threshold', '14 days')
+        # Extract number from string like "14 days" or "7-14 days"
+        match = re.search(r'(\d+)', str(days_str))
+        benchmarks['owner_independence_days'] = int(match.group(1)) if match else 14
+        
+        # Get discount range
+        discount = owner_data.get('discount', '20-30%')
+        benchmarks['owner_dependence_discount'] = discount
+    else:
+        benchmarks['owner_independence_days'] = 14
+        benchmarks['owner_dependence_discount'] = '20-30%'
+    
+    # Extract customer concentration threshold
+    concentration_data = valuation_data.get('customer_concentration', {})
+    if isinstance(concentration_data, dict):
+        threshold_str = concentration_data.get('threshold', '25%')
+        match = re.search(r'(\d+)', str(threshold_str))
+        benchmarks['concentration_threshold'] = int(match.group(1)) if match else 25
+        benchmarks['concentration_discount'] = concentration_data.get('discount', '15-20%')
+    else:
+        benchmarks['concentration_threshold'] = 25
+        benchmarks['concentration_discount'] = '15-20%'
+    
+    # Extract recurring revenue threshold
+    recurring_data = valuation_data.get('recurring_revenue', {})
+    if isinstance(recurring_data, dict):
+        threshold_str = recurring_data.get('threshold', '60%')
+        match = re.search(r'(\d+)', str(threshold_str))
+        benchmarks['recurring_threshold'] = int(match.group(1)) if match else 60
+        benchmarks['recurring_premium'] = recurring_data.get('premium', '1.5-2.0x')
+    else:
+        benchmarks['recurring_threshold'] = 60
+        benchmarks['recurring_premium'] = '1.5-2.0x'
+    
+    # Extract profit margin expectations
+    margin_data = valuation_data.get('profit_margins', {})
+    if isinstance(margin_data, dict):
+        # Check for industry-specific margins
+        by_industry = margin_data.get('by_industry', {})
+        if industry in by_industry:
+            benchmarks['expected_margin'] = by_industry[industry]
+        else:
+            benchmarks['expected_margin'] = margin_data.get('expected_EBITDA', '15-20%')
+    else:
+        benchmarks['expected_margin'] = '15-20%'
+    
+    # Check for industry-specific thresholds in fallback data
+    industry_thresholds = research_data.get('industry_specific_thresholds', {})
+    if industry in industry_thresholds:
+        industry_data = industry_thresholds[industry]
+        # Override with industry-specific values if available
+        if 'owner_independence' in industry_data:
+            match = re.search(r'(\d+)', industry_data['owner_independence'])
+            if match:
+                benchmarks['owner_independence_days'] = int(match.group(1))
+        if 'customer_concentration' in industry_data:
+            match = re.search(r'(\d+)', industry_data['customer_concentration'])
+            if match:
+                benchmarks['concentration_threshold'] = int(match.group(1))
+        if 'recurring_revenue' in industry_data:
+            match = re.search(r'(\d+)', industry_data['recurring_revenue'])
+            if match:
+                benchmarks['recurring_threshold'] = int(match.group(1))
+    
+    return benchmarks
 
 
 def calculate_time_impact(years_in_business: int) -> float:
@@ -61,7 +141,15 @@ def calculate_growth_trajectory(revenue_trend: str, profit_trend: str) -> float:
 
 
 def score_owner_dependence(responses: Dict[str, str], research_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Score owner dependence category"""
+    """Score owner dependence category with dynamic benchmarks"""
+    # Extract industry from responses
+    industry = responses.get("industry", "Professional Services")
+    
+    # Get dynamic benchmarks
+    benchmarks = extract_industry_benchmarks(research_data, industry)
+    days_threshold = benchmarks['owner_independence_days']
+    discount_range = benchmarks['owner_dependence_discount']
+    
     base_score = 5.0
     gaps = []
     strengths = []
@@ -89,30 +177,48 @@ def score_owner_dependence(responses: Dict[str, str], research_data: Dict[str, A
             strengths.append("Shows delegation to team members")
             adjustments.append("+2.0: Good delegation evident")
     
-    # Q2 - Time away capability
+    # Q2 - Time away capability (using dynamic threshold)
     q2_response = responses.get("q2", "").strip()
     if q2_response:
         time_impact = 0.0
+        
+        # Extract days from response
         if "None" in q2_response or "0 days" in q2_response:
-            time_impact = -2.0
-            gaps.append("Business cannot operate without owner")
-            adjustments.append("-2.0: Zero independence")
+            actual_days = 0
         elif "Less than 3 days" in q2_response:
-            time_impact = -0.5
-            gaps.append("Very limited operational independence")
-            adjustments.append("-0.5: Less than 3 days independence")
+            actual_days = 2
+        elif "3-7 days" in q2_response:
+            actual_days = 5
         elif "1-2 weeks" in q2_response:
-            time_impact = 1.0
-            strengths.append("Moderate operational independence")
-            adjustments.append("+1.0: 1-2 weeks independence")
+            actual_days = 10
         elif "2-4 weeks" in q2_response:
-            time_impact = 2.5
-            strengths.append("Good operational independence")
-            adjustments.append("+2.5: Up to a month independence")
+            actual_days = 21
         elif "More than a month" in q2_response:
+            actual_days = 35
+        else:
+            actual_days = 7  # Default
+        
+        # Score based on industry-specific threshold
+        if actual_days == 0:
+            time_impact = -2.0
+            gaps.append(f"Business cannot operate without owner (industry expects {days_threshold} days)")
+            adjustments.append(f"-2.0: Zero independence vs {days_threshold} day standard")
+        elif actual_days < days_threshold / 2:
+            time_impact = -1.0
+            gaps.append(f"Well below industry standard of {days_threshold} days")
+            adjustments.append(f"-1.0: Only {actual_days} days vs {days_threshold} expected")
+        elif actual_days < days_threshold:
+            time_impact = 0.0
+            gaps.append(f"Below industry standard of {days_threshold} days")
+            adjustments.append(f"0.0: {actual_days} days approaching {days_threshold} standard")
+        elif actual_days >= days_threshold * 2:
             time_impact = 3.5
-            strengths.append("Excellent operational independence")
-            adjustments.append("+3.5: Over a month independence")
+            strengths.append(f"Exceeds industry standard of {days_threshold} days")
+            adjustments.append(f"+3.5: {actual_days} days well above {days_threshold} standard")
+        else:
+            time_impact = 2.0
+            strengths.append(f"Meets industry standard of {days_threshold} days")
+            adjustments.append(f"+2.0: {actual_days} days meets {days_threshold} standard")
         
         base_score += time_impact
     
@@ -130,14 +236,26 @@ def score_owner_dependence(responses: Dict[str, str], research_data: Dict[str, A
         "strengths": strengths if strengths else ["Some delegation structure exists"],
         "gaps": gaps if gaps else ["No critical owner dependence issues identified"],
         "industry_context": {
-            "benchmark": "Buyers expect business to run 14+ days without owner",
-            "impact": "High owner dependence can reduce value by 30-50%"
+            "benchmark": f"{industry} buyers expect business to run {days_threshold}+ days without owner",
+            "impact": f"High owner dependence can reduce value by {discount_range}",
+            "industry": industry,
+            "threshold_used": days_threshold
         }
     }
 
 
 def score_revenue_quality(responses: Dict[str, str], research_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Score revenue quality and predictability"""
+    """Score revenue quality and predictability with dynamic benchmarks"""
+    # Extract industry
+    industry = responses.get("industry", "Professional Services")
+    
+    # Get dynamic benchmarks
+    benchmarks = extract_industry_benchmarks(research_data, industry)
+    concentration_threshold = benchmarks['concentration_threshold']
+    concentration_discount = benchmarks['concentration_discount']
+    recurring_threshold = benchmarks['recurring_threshold']
+    recurring_premium = benchmarks['recurring_premium']
+    
     base_score = 5.0
     gaps = []
     strengths = []
@@ -160,29 +278,45 @@ def score_revenue_quality(responses: Dict[str, str], research_data: Dict[str, An
         # Check for recurring revenue indicators
         if any(word in q3_response.lower() for word in ['subscription', 'recurring', 'monthly', 'annual', 'contract']):
             base_score += 1.5
-            strengths.append("Recurring revenue model identified")
-            adjustments.append("+1.5: Recurring revenue present")
+            strengths.append(f"Recurring revenue model (premium at {recurring_threshold}%+)")
+            adjustments.append(f"+1.5: Recurring revenue present")
     
-    # Q4 - Customer concentration
+    # Q4 - Customer concentration (using dynamic threshold)
     q4_response = responses.get("q4", "").strip()
     if q4_response:
         concentration_impact = 0.0
+        
+        # Determine concentration level
         if "0-20%" in q4_response:
-            concentration_impact = 2.5
-            strengths.append("Excellent customer diversification")
-            adjustments.append("+2.5: Low concentration (<20%)")
+            actual_concentration = 10
         elif "20-40%" in q4_response:
-            concentration_impact = 1.0
-            strengths.append("Good customer diversification")
-            adjustments.append("+1.0: Moderate concentration")
+            actual_concentration = 30
         elif "40-60%" in q4_response:
-            concentration_impact = -1.0
-            gaps.append("High customer concentration risk")
-            adjustments.append("-1.0: High concentration")
-        elif "60-80%" in q4_response or "80-100%" in q4_response:
+            actual_concentration = 50
+        elif "60-80%" in q4_response:
+            actual_concentration = 70
+        elif "80-100%" in q4_response:
+            actual_concentration = 90
+        else:
+            actual_concentration = 30  # Default
+        
+        # Score based on industry-specific threshold
+        if actual_concentration < concentration_threshold:
+            concentration_impact = 2.5
+            strengths.append(f"Excellent diversification (below {concentration_threshold}% threshold)")
+            adjustments.append(f"+2.5: {actual_concentration}% concentration below {concentration_threshold}% threshold")
+        elif actual_concentration < concentration_threshold * 1.5:
+            concentration_impact = 0.5
+            gaps.append(f"Approaching concentration risk threshold of {concentration_threshold}%")
+            adjustments.append(f"+0.5: {actual_concentration}% approaching {concentration_threshold}% threshold")
+        elif actual_concentration < concentration_threshold * 2:
+            concentration_impact = -1.5
+            gaps.append(f"High concentration risk (above {concentration_threshold}% threshold)")
+            adjustments.append(f"-1.5: {actual_concentration}% exceeds {concentration_threshold}% threshold")
+        else:
             concentration_impact = -2.5
-            gaps.append("Critical customer concentration - major risk")
-            adjustments.append("-2.5: Critical concentration")
+            gaps.append(f"Critical concentration - {concentration_discount} discount likely")
+            adjustments.append(f"-2.5: {actual_concentration}% far exceeds {concentration_threshold}% threshold")
         
         base_score += concentration_impact
     
@@ -200,14 +334,27 @@ def score_revenue_quality(responses: Dict[str, str], research_data: Dict[str, An
         "strengths": strengths if strengths else ["Basic revenue structure in place"],
         "gaps": gaps if gaps else ["No critical revenue quality issues"],
         "industry_context": {
-            "benchmark": "Buyers prefer <30% customer concentration",
-            "impact": "High concentration can reduce multiples by 20-40%"
+            "benchmark": f"{industry} buyers prefer <{concentration_threshold}% customer concentration",
+            "impact": f"High concentration can trigger {concentration_discount} discount",
+            "recurring_expectation": f"{recurring_threshold}%+ recurring for {recurring_premium} premium",
+            "industry": industry,
+            "thresholds_used": {
+                "concentration": concentration_threshold,
+                "recurring": recurring_threshold
+            }
         }
     }
 
 
 def score_financial_readiness(responses: Dict[str, str], research_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Score financial readiness category"""
+    """Score financial readiness category with industry profit expectations"""
+    # Extract industry
+    industry = responses.get("industry", "Professional Services")
+    
+    # Get expected margins for industry
+    benchmarks = extract_industry_benchmarks(research_data, industry)
+    expected_margin = benchmarks['expected_margin']
+    
     base_score = 5.0
     gaps = []
     strengths = []
@@ -246,21 +393,21 @@ def score_financial_readiness(responses: Dict[str, str], research_data: Dict[str
         except:
             base_score = 3.0
     
-    # Q6 - Profit margin trend
+    # Q6 - Profit margin trend (with industry context)
     q6_response = responses.get("q6", "").strip()
     if q6_response:
         margin_impact = 0.0
         if "Declined significantly" in q6_response:
             margin_impact = 0.5
-            gaps.append("Significant margin decline - major concern")
-            adjustments.append("+0.5: Significant margin decline")
+            gaps.append(f"Significant margin decline vs {expected_margin} industry standard")
+            adjustments.append(f"+0.5: Significant margin decline")
         elif "Declined slightly" in q6_response:
             margin_impact = 1.5
             gaps.append("Margin pressure evident")
             adjustments.append("+1.5: Slight margin decline")
         elif "Stayed flat" in q6_response:
             margin_impact = 2.5
-            strengths.append("Stable profit margins")
+            strengths.append(f"Stable margins (industry expects {expected_margin})")
             adjustments.append("+2.5: Stable margins")
         elif "Improved slightly" in q6_response:
             margin_impact = 3.0
@@ -268,7 +415,7 @@ def score_financial_readiness(responses: Dict[str, str], research_data: Dict[str
             adjustments.append("+3.0: Improving margins")
         elif "Improved significantly" in q6_response:
             margin_impact = 4.0
-            strengths.append("Strong margin growth - very attractive")
+            strengths.append(f"Strong margin growth vs {expected_margin} benchmark")
             adjustments.append("+4.0: Significant margin improvement")
         
         base_score += margin_impact
@@ -287,14 +434,30 @@ def score_financial_readiness(responses: Dict[str, str], research_data: Dict[str
         "strengths": strengths if strengths else ["Financial systems in place"],
         "gaps": gaps if gaps else ["No critical financial readiness issues"],
         "industry_context": {
-            "benchmark": "Industry expects 15-20% EBITDA margins",
-            "impact": "Strong financials can add 20-30% to valuation"
+            "benchmark": f"{industry} expects {expected_margin} EBITDA margins",
+            "impact": "Strong financials can add 20-30% to valuation",
+            "industry": industry,
+            "margin_expectation": expected_margin
         }
     }
 
 
 def score_operational_resilience(responses: Dict[str, str], research_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Score operational resilience category"""
+    """Score operational resilience category with industry-specific expectations"""
+    # Extract industry
+    industry = responses.get("industry", "Professional Services")
+    
+    # Industry-specific documentation expectations
+    documentation_expectations = {
+        "Manufacturing": "High (ISO standards expected)",
+        "Healthcare": "Very High (compliance critical)",
+        "Technology": "High (code documentation and IP)",
+        "Professional Services": "Medium (client procedures)",
+        "Retail": "Medium (operations manual)"
+    }
+    
+    doc_expectation = documentation_expectations.get(industry, "Medium")
+    
     base_score = 5.0
     gaps = []
     strengths = []
@@ -317,7 +480,7 @@ def score_operational_resilience(responses: Dict[str, str], research_data: Dict[
             base_score = 4.0
             gaps.append("Some key person dependencies exist")
     
-    # Q8 - Process documentation
+    # Q8 - Process documentation (with industry context)
     q8_response = responses.get("q8", "").strip()
     if q8_response:
         try:
@@ -328,21 +491,33 @@ def score_operational_resilience(responses: Dict[str, str], research_data: Dict[
                 match = re.search(r'(\d+)', q8_response)
                 doc_score = int(match.group(1)) if match else 5
             
-            if doc_score >= 9:
-                base_score += 2.5
-                strengths.append("Excellent process documentation")
-                adjustments.append("+2.5: Comprehensive documentation")
-            elif doc_score >= 7:
-                base_score += 1.5
-                strengths.append("Good documentation practices")
-                adjustments.append("+1.5: Good documentation")
-            elif doc_score >= 5:
-                base_score += 0.5
-                adjustments.append("+0.5: Moderate documentation")
+            # Adjust expectations based on industry
+            if "High" in doc_expectation or "Very High" in doc_expectation:
+                # Industries with high documentation needs
+                if doc_score >= 8:
+                    base_score += 2.5
+                    strengths.append(f"Excellent documentation for {industry} standards")
+                    adjustments.append(f"+2.5: Strong documentation for {industry}")
+                elif doc_score >= 6:
+                    base_score += 1.0
+                    adjustments.append(f"+1.0: Adequate documentation for {industry}")
+                else:
+                    base_score -= 1.5
+                    gaps.append(f"Poor documentation vs {doc_expectation} industry standard")
+                    adjustments.append(f"-1.5: Below {industry} documentation standards")
             else:
-                base_score -= 1.0
-                gaps.append("Poor process documentation")
-                adjustments.append("-1.0: Poor documentation")
+                # Industries with moderate documentation needs
+                if doc_score >= 7:
+                    base_score += 2.0
+                    strengths.append("Good documentation practices")
+                    adjustments.append("+2.0: Good documentation")
+                elif doc_score >= 5:
+                    base_score += 0.5
+                    adjustments.append("+0.5: Moderate documentation")
+                else:
+                    base_score -= 0.5
+                    gaps.append("Documentation needs improvement")
+                    adjustments.append("-0.5: Poor documentation")
         except:
             pass
     
@@ -360,14 +535,30 @@ def score_operational_resilience(responses: Dict[str, str], research_data: Dict[
         "strengths": strengths if strengths else ["Basic operational structure exists"],
         "gaps": gaps if gaps else ["No critical operational issues"],
         "industry_context": {
-            "benchmark": "Buyers expect documented processes and backup for key roles",
-            "impact": "Poor documentation can extend due diligence by 2-3 months"
+            "benchmark": f"{industry} expects {doc_expectation}",
+            "impact": "Poor documentation can extend due diligence by 2-3 months",
+            "industry": industry,
+            "documentation_standard": doc_expectation
         }
     }
 
 
 def score_growth_value(responses: Dict[str, str], research_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Score growth potential and unique value"""
+    """Score growth potential and unique value with industry context"""
+    # Extract industry
+    industry = responses.get("industry", "Professional Services")
+    
+    # Industry-specific value drivers
+    industry_value_drivers = {
+        "Technology": ["proprietary", "patent", "ip", "saas", "platform", "api"],
+        "Healthcare": ["license", "certification", "accreditation", "medicare", "patient base"],
+        "Manufacturing": ["patent", "proprietary", "exclusive", "iso", "contract"],
+        "Professional Services": ["reputation", "expertise", "certification", "methodology"],
+        "Retail": ["brand", "location", "exclusive", "franchise"]
+    }
+    
+    value_keywords = industry_value_drivers.get(industry, ["unique", "proprietary", "exclusive"])
+    
     base_score = 3.0  # Start lower since we build up
     gaps = []
     strengths = []
@@ -379,20 +570,23 @@ def score_growth_value(responses: Dict[str, str], research_data: Dict[str, Any])
         value_score = 0.0
         value_drivers = []
         
-        # Check for strong value indicators
-        strong_indicators = [
-            ("proprietary", 2.0, "Proprietary technology/IP"),
-            ("patent", 2.0, "Patent protection"),
-            ("exclusive", 1.5, "Exclusive agreements"),
+        # Check for industry-specific value indicators
+        for keyword in value_keywords:
+            if keyword in q9_response:
+                value_score += 1.5
+                value_drivers.append(f"{keyword} (key for {industry})")
+                strengths.append(f"{keyword.title()} - valuable in {industry}")
+        
+        # Check for general strong indicators
+        general_indicators = [
             ("market leader", 1.5, "Market leadership position"),
-            ("unique", 1.0, "Unique market position"),
             ("recurring", 1.0, "Recurring revenue model"),
             ("contract", 0.8, "Long-term contracts"),
             ("relationship", 0.5, "Strong customer relationships")
         ]
         
-        for indicator, points, description in strong_indicators:
-            if indicator in q9_response:
+        for indicator, points, description in general_indicators:
+            if indicator in q9_response and description not in value_drivers:
                 value_score += points
                 value_drivers.append(description)
                 strengths.append(description)
@@ -400,7 +594,7 @@ def score_growth_value(responses: Dict[str, str], research_data: Dict[str, Any])
         # Check for weak indicators
         if "no" in q9_response or "not really" in q9_response or "none" in q9_response:
             value_score = -1.0
-            gaps.append("No clear competitive advantages identified")
+            gaps.append(f"No clear competitive advantages for {industry}")
         
         # Apply value driver score
         base_score += min(4.0, value_score)  # Cap at 4.0
@@ -424,7 +618,7 @@ def score_growth_value(responses: Dict[str, str], research_data: Dict[str, Any])
             adjustments.append(f"+{growth_potential * 0.3:.1f}: Growth potential score")
             
             if growth_potential >= 8:
-                strengths.append("High growth confidence")
+                strengths.append(f"High growth confidence in {industry} market")
             elif growth_potential <= 3:
                 gaps.append("Limited growth expectations")
         except:
@@ -432,6 +626,12 @@ def score_growth_value(responses: Dict[str, str], research_data: Dict[str, Any])
     
     # Ensure score stays in bounds
     final_score = max(1.0, min(10.0, base_score))
+    
+    # Get industry key value driver from research
+    valuation_data = research_data.get('valuation_benchmarks', {})
+    key_driver = "competitive advantages"
+    if 'key_value_driver' in research_data.get('industry_specific_thresholds', {}).get(industry, {}):
+        key_driver = research_data['industry_specific_thresholds'][industry]['key_value_driver']
     
     return {
         "score": round(final_score, 1),
@@ -444,8 +644,10 @@ def score_growth_value(responses: Dict[str, str], research_data: Dict[str, Any])
         "strengths": strengths if strengths else ["Some growth potential exists"],
         "gaps": gaps if gaps else ["Value proposition needs strengthening"],
         "industry_context": {
-            "benchmark": "Premium valuations require clear competitive moats",
-            "impact": "Strong value drivers can increase multiples by 2-3x"
+            "benchmark": f"Premium valuations in {industry} require strong {key_driver}",
+            "impact": "Strong value drivers can increase multiples by 2-3x",
+            "industry": industry,
+            "key_value_drivers": value_keywords[:3]
         }
     }
 

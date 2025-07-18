@@ -1,6 +1,6 @@
 """
-QA Node - Quality assurance with LLM intelligence.
-Performs both mechanical and intelligent quality checks.
+QA Node - Quality assurance with LLM intelligence and formatting standardization.
+Performs mechanical checks, intelligent analysis, and Placid-compatible formatting.
 """
 
 import logging
@@ -22,30 +22,193 @@ from workflow.core.validators import (
 logger = logging.getLogger(__name__)
 
 
+def standardize_formatting_for_placid(text: str) -> str:
+    """
+    Standardize text formatting for Placid compatibility.
+    Removes all markdown and applies consistent plain text formatting.
+    """
+    if not text:
+        return text
+    
+    # Remove markdown bold/italic
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # **bold**
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)      # *italic*
+    text = re.sub(r'__([^_]+)__', r'\1', text)      # __bold__
+    text = re.sub(r'_([^_]+)_', r'\1', text)        # _italic_
+    
+    # Convert markdown headers to plain text
+    # For headers in individual fields, just convert to title case
+    text = re.sub(r'^#{1,6}\s+(.+)$', lambda m: m.group(1).upper(), text, flags=re.MULTILINE)
+    
+    # Standardize bullet points
+    text = re.sub(r'^[\-\*\+]\s+', '• ', text, flags=re.MULTILINE)
+    text = re.sub(r'^[\d]+\.\s+', lambda m: f"{m.group(0)}", text, flags=re.MULTILINE)  # Keep numbered lists
+    
+    # Remove any remaining markdown syntax
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)  # [text](url) -> text
+    text = re.sub(r'`([^`]+)`', r'\1', text)  # `code` -> code
+    text = re.sub(r'```[^`]*```', '', text)   # Remove code blocks
+    
+    # Clean up extra whitespace
+    text = re.sub(r'\n{3,}', '\n\n', text)    # Max 2 newlines
+    text = re.sub(r' {2,}', ' ', text)        # Remove multiple spaces
+    
+    # Remove any HTML tags that might have slipped through
+    text = re.sub(r'<[^>]+>', '', text)
+    
+    return text.strip()
+
+
+def apply_section_formatting(sections: Dict[str, Any], final_report: str) -> Dict[str, Any]:
+    """
+    Apply formatting to all report sections.
+    Individual sections get clean text only.
+    Final report gets section separators for document view.
+    """
+    formatted_sections = {}
+    
+    # Format individual sections (no separators)
+    if isinstance(sections.get("executive_summary"), str):
+        formatted_sections["executive_summary"] = standardize_formatting_for_placid(
+            sections["executive_summary"]
+        )
+    
+    if isinstance(sections.get("category_summaries"), dict):
+        formatted_cats = {}
+        for cat, summary in sections["category_summaries"].items():
+            formatted_cats[cat] = standardize_formatting_for_placid(summary)
+        formatted_sections["category_summaries"] = formatted_cats
+    
+    if isinstance(sections.get("recommendations"), str):
+        formatted_sections["recommendations"] = standardize_formatting_for_placid(
+            sections["recommendations"]
+        )
+    elif isinstance(sections.get("recommendations"), dict):
+        # Handle dict format recommendations
+        formatted_sections["recommendations"] = sections["recommendations"]
+    
+    if isinstance(sections.get("next_steps"), str):
+        formatted_sections["next_steps"] = standardize_formatting_for_placid(
+            sections["next_steps"]
+        )
+    
+    # Format the complete report with section separators
+    if final_report:
+        formatted_report = format_final_report_with_separators(final_report)
+        formatted_sections["final_report"] = formatted_report
+    
+    return formatted_sections
+
+
+def format_final_report_with_separators(report: str) -> str:
+    """
+    Format the complete report with visual separators between sections.
+    This is only for the full document view, not individual Placid fields.
+    """
+    # First apply standard formatting
+    report = standardize_formatting_for_placid(report)
+    
+    # Define section patterns
+    section_patterns = [
+        (r'(EXECUTIVE SUMMARY)', r'\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n\1'),
+        (r'(YOUR EXIT READINESS SCORE)', r'\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n\1'),
+        (r'(DETAILED ANALYSIS BY CATEGORY)', r'\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n\1'),
+        (r'(PERSONALIZED RECOMMENDATIONS)', r'\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n\1'),
+        (r'(INDUSTRY & MARKET CONTEXT)', r'\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n\1'),
+        (r'(YOUR NEXT STEPS)', r'\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n\1'),
+    ]
+    
+    # Apply major section separators
+    for pattern, replacement in section_patterns:
+        report = re.sub(pattern, replacement, report)
+    
+    # Add subsection separators for category analyses
+    category_headers = [
+        'Owner Dependence Analysis',
+        'Revenue Quality Analysis', 
+        'Financial Readiness Analysis',
+        'Operational Resilience Analysis',
+        'Growth Potential Analysis'
+    ]
+    
+    for header in category_headers:
+        pattern = f'({header.upper()})'
+        replacement = r'\n───────────────────────────────────────\n\n\1'
+        report = re.sub(pattern, replacement, report)
+    
+    # Clean up any duplicate separators
+    report = re.sub(r'(━{60}\n\n){2,}', r'━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n', report)
+    report = re.sub(r'(─{39}\n\n){2,}', r'───────────────────────────────────────\n\n', report)
+    
+    # Add header
+    header = """EXIT READY SNAPSHOT ASSESSMENT REPORT
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"""
+    
+    # Add footer
+    footer = """
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CONFIDENTIAL BUSINESS ASSESSMENT
+Prepared by: On Pulse Solutions
+Report Date: [REPORT_DATE]
+Valid for: 90 days
+
+This report contains proprietary analysis and recommendations specific to your business.
+The insights and strategies outlined are based on your assessment responses and current market conditions.
+
+© On Pulse Solutions - Exit Ready Snapshot"""
+    
+    if not report.startswith("EXIT READY SNAPSHOT"):
+        report = header + report
+    
+    if "© On Pulse Solutions" not in report:
+        report = report + footer
+    
+    return report
+
+
 def qa_node(state: WorkflowState) -> WorkflowState:
     """
-    Enhanced QA validation with LLM-based improvements.
+    Enhanced QA validation with LLM intelligence and formatting standardization.
     
     Key enhancements:
-    1. LLM-based redundancy detection
+    1. LLM-based redundancy detection with GPT-4.1
     2. Tone consistency checking
     3. Citation verification
     4. Issue fixing with LLM assistance
-    5. Report polishing for readability
+    5. Report polishing with GPT-4.1 for readability
+    6. Placid-compatible formatting
     """
     start_time = time.time()
     
     try:
-        logger.info("Starting enhanced QA validation...")
+        logger.info("Starting enhanced QA validation with formatting...")
         
         # Get required data
         scoring_result = state.get("scoring_result", {})
         summary_result = state.get("summary_result", {})
         
-        # Initialize QA LLM (using nano for speed)
+        # Initialize QA LLMs - use GPT-4.1 nano for basic checks, GPT-4.1 for sophisticated analysis
         qa_llm = ChatOpenAI(
-            model="gpt-4o-mini",
+            model="gpt-4.1-nano",  # Fast, efficient for mechanical checks
             temperature=0,
+            max_tokens=4000
+        )
+        
+        # GPT-4.1 for redundancy and polish (better understanding of nuance)
+        redundancy_llm = ChatOpenAI(
+            model="gpt-4.1",  # Superior instruction following and comprehension
+            temperature=0.1,
+            max_tokens=4000
+        )
+        
+        polish_llm = ChatOpenAI(
+            model="gpt-4.1",  # Best for final polish and impact
+            temperature=0.3,
             max_tokens=4000
         )
         
@@ -107,11 +270,11 @@ def qa_node(state: WorkflowState) -> WorkflowState:
         # 2. Enhanced LLM-Based Checks
         logger.info("Running LLM-based quality checks...")
         
-        # Check for redundancy
-        logger.info("Checking for content redundancy...")
+        # Check for redundancy with GPT-4.1
+        logger.info("Checking for content redundancy with GPT-4.1...")
         redundancy_check = check_redundancy_llm(
             summary_result.get("final_report", ""),
-            qa_llm
+            redundancy_llm  # Using GPT-4.1
         )
         quality_scores["redundancy_check"] = redundancy_check
         
@@ -122,11 +285,11 @@ def qa_node(state: WorkflowState) -> WorkflowState:
         if redundancy_check.get("redundancy_score", 10) < redundancy_threshold:
             qa_warnings.append(f"High redundancy detected (score: {redundancy_check.get('redundancy_score')}/10)")
         
-        # Check tone consistency
+        # Check tone consistency with nano (fast check)
         logger.info("Checking tone consistency...")
         tone_check = check_tone_consistency_llm(
             summary_result.get("final_report", ""),
-            qa_llm
+            qa_llm  # Using nano for speed
         )
         quality_scores["tone_consistency"] = tone_check
         
@@ -134,7 +297,7 @@ def qa_node(state: WorkflowState) -> WorkflowState:
         if tone_check.get("tone_score", 10) < 4:
             qa_warnings.append(f"Tone inconsistency detected (score: {tone_check.get('tone_score')}/10)")
         
-        # Verify Citations (FIXED to handle both string and dict formats)
+        # Verify Citations
         logger.info("Verifying citations and statistical claims...")
         research_result = state.get("research_result", {})
         citation_check = verify_citations_llm(
@@ -159,7 +322,6 @@ def qa_node(state: WorkflowState) -> WorkflowState:
         overall_quality_score = calculate_overall_qa_score(quality_scores)
         
         # ADJUSTED: Lower approval threshold from 7.0 to 6.0
-        # Also separate critical issues from warnings
         critical_issues = [issue for issue in qa_issues if "CRITICAL" in issue or "PII" in issue]
         non_critical_issues = [issue for issue in qa_issues if issue not in critical_issues]
         
@@ -277,15 +439,15 @@ def qa_node(state: WorkflowState) -> WorkflowState:
         if not approved and fix_attempts >= max_fix_attempts:
             logger.warning(f"Could not fix all issues after {max_fix_attempts} attempts")
         
-        # 3. Apply Final Polish (even if approved)
-        logger.info("Applying final polish to report...")
+        # 3. Apply Final Polish with GPT-4.1 (even if approved)
+        logger.info("Applying final polish to report with GPT-4.1...")
         polished_sections = {}
         
         if approved or fix_attempts < max_fix_attempts:
             polished_sections = polish_report_llm(
                 summary_result,
                 scoring_result,
-                qa_llm
+                polish_llm  # Using GPT-4.1 for superior polish
             )
             
             # Update with polished content
@@ -300,6 +462,19 @@ def qa_node(state: WorkflowState) -> WorkflowState:
                     scoring_result.get("readiness_level")
                 )
         
+        # 4. APPLY FORMATTING STANDARDIZATION
+        logger.info("Applying Placid-compatible formatting...")
+        formatted_sections = apply_section_formatting(summary_result, summary_result.get("final_report", ""))
+        
+        # Update summary result with formatted content
+        for section, content in formatted_sections.items():
+            summary_result[section] = content
+        
+        # Validate formatting
+        formatting_valid = validate_plain_text_formatting(summary_result)
+        if not formatting_valid.get("is_valid", True):
+            qa_warnings.extend(formatting_valid.get("issues", []))
+        
         # Prepare QA result
         qa_result = {
             "status": "success",
@@ -312,7 +487,9 @@ def qa_node(state: WorkflowState) -> WorkflowState:
             "warnings": qa_warnings,
             "polished_sections": polished_sections,
             "fixed_sections": fixed_sections,
+            "formatted_sections": list(formatted_sections.keys()),
             "fix_attempts": fix_attempts,
+            "formatting_applied": True,
             "validation_summary": {
                 "total_checks": 7,
                 "mechanical_checks": 4,
@@ -322,6 +499,7 @@ def qa_node(state: WorkflowState) -> WorkflowState:
                 "warnings": len(qa_warnings),
                 "sections_polished": len(polished_sections),
                 "sections_fixed": len(fixed_sections),
+                "sections_formatted": len(formatted_sections),
                 "required_fix_attempts": fix_attempts
             }
         }
@@ -329,22 +507,8 @@ def qa_node(state: WorkflowState) -> WorkflowState:
         # Update state
         state["qa_result"] = qa_result
         
-        # If we fixed sections, update the summary result and regenerate report
-        if fixed_sections or polished_sections:
-            all_updates = {**fixed_sections, **polished_sections}
-            for section, content in all_updates.items():
-                if section in summary_result:
-                    summary_result[section] = content
-            
-            # Regenerate final report with all updates
-            summary_result["final_report"] = regenerate_final_report(
-                summary_result,
-                scoring_result.get("overall_score"),
-                scoring_result.get("readiness_level")
-            )
-            
-            # Update state with improved content
-            state["summary_result"] = summary_result
+        # Update state with formatted content
+        state["summary_result"] = summary_result
         
         state["current_stage"] = "qa_complete"
         
@@ -356,17 +520,18 @@ def qa_node(state: WorkflowState) -> WorkflowState:
         if approved:
             state["messages"].append(
                 f"✅ Enhanced QA validation passed with score {overall_quality_score:.1f}/10 "
-                f"({fix_attempts} fix attempts, {len(polished_sections)} sections polished)"
+                f"({fix_attempts} fix attempts, {len(polished_sections)} sections polished, "
+                f"{len(formatted_sections)} sections formatted for Placid)"
             )
         else:
             state["messages"].append(
                 f"⚠️ QA validation completed with {len(qa_issues)} issues and {len(qa_warnings)} warnings "
-                f"(score: {overall_quality_score:.1f}/10, {fix_attempts} fix attempts)"
+                f"(score: {overall_quality_score:.1f}/10, {fix_attempts} fix attempts, formatting applied)"
             )
         
         logger.info(f"Enhanced QA validation completed in {processing_time:.2f}s")
         logger.info(f"Result: Approved={approved}, Score={overall_quality_score:.1f}/10, "
-                   f"Issues={len(qa_issues)}, Warnings={len(qa_warnings)}")
+                   f"Issues={len(qa_issues)}, Warnings={len(qa_warnings)}, Formatting=Applied")
         
         return state
         
@@ -376,6 +541,46 @@ def qa_node(state: WorkflowState) -> WorkflowState:
         state["messages"].append(f"ERROR in QA: {str(e)}")
         state["current_stage"] = "qa_error"
         return state
+
+
+def validate_plain_text_formatting(sections: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate that all sections are properly formatted for Placid"""
+    issues = []
+    
+    # Check for remaining markdown
+    markdown_patterns = [
+        r'\*\*[^*]+\*\*',  # **bold**
+        r'\*[^*]+\*',      # *italic*
+        r'#{1,6}\s+',      # # headers
+        r'\[([^\]]+)\]\([^)]+\)',  # [text](url)
+        r'`[^`]+`',        # `code`
+    ]
+    
+    sections_to_check = [
+        "executive_summary",
+        "recommendations", 
+        "next_steps",
+        "final_report"
+    ]
+    
+    for section in sections_to_check:
+        if section in sections and isinstance(sections[section], str):
+            content = sections[section]
+            for pattern in markdown_patterns:
+                if re.search(pattern, content):
+                    issues.append(f"Markdown found in {section}: {pattern}")
+    
+    # Check category summaries
+    if "category_summaries" in sections and isinstance(sections["category_summaries"], dict):
+        for cat, summary in sections["category_summaries"].items():
+            for pattern in markdown_patterns:
+                if re.search(pattern, summary):
+                    issues.append(f"Markdown found in {cat}: {pattern}")
+    
+    return {
+        "is_valid": len(issues) == 0,
+        "issues": issues
+    }
 
 
 def calculate_overall_qa_score(quality_scores: Dict[str, Dict]) -> float:
@@ -423,7 +628,7 @@ def calculate_overall_qa_score(quality_scores: Dict[str, Dict]) -> float:
 
 
 def check_redundancy_llm(report: str, llm: ChatOpenAI) -> Dict[str, Any]:
-    """Use LLM to detect redundant content in the report"""
+    """Use GPT-4.1 to detect redundant content with nuanced understanding"""
     
     prompt = """Analyze this business assessment report for redundancy and repetitive content.
 
@@ -436,34 +641,42 @@ Evaluate:
 3. Are there verbose explanations that could be more concise?
 4. Do multiple sections say essentially the same thing?
 
-Important: Some repetition is NORMAL and NECESSARY in business reports:
-- Key metrics may appear in summary and detailed sections
-- Important recommendations may be emphasized multiple times
-- Scores and ratings will naturally appear in multiple contexts
-- Only flag content that appears 3+ times with no added value
+Important: Strategic repetition is ESSENTIAL in business reports:
+- Key metrics appearing in summary and detailed sections is GOOD
+- Important recommendations emphasized 2-3 times is EFFECTIVE
+- Scores and critical findings in multiple contexts is NECESSARY
+- The primary focus area should appear in executive summary, recommendations, and next steps
+
+Only flag TRUE redundancy where:
+- The exact same sentence appears 3+ times
+- A concept is explained identically 4+ times with no new context
+- Filler content repeats without purpose
+
+Understand concept variations as DIFFERENT content:
+- "owner dependence" vs "key person risk" vs "business relies on founder" = different angles
+- "recurring revenue" vs "predictable income" vs "subscription model" = related but distinct
 
 Provide your analysis in this exact JSON format:
 {
-    "redundancy_score": <0-10, where 10 is no redundancy>,
-    "redundant_sections": ["list", "of", "redundant", "sections"],
-    "specific_examples": ["example 1", "example 2"],
-    "suggested_consolidations": ["suggestion 1", "suggestion 2"]
+    "redundancy_score": <0-10, where 10 is no problematic redundancy>,
+    "redundant_sections": ["list", "of", "truly", "redundant", "sections"],
+    "specific_examples": ["exact duplicate content only"],
+    "suggested_consolidations": ["only if truly excessive"]
 }
 
-Be lenient - business reports need emphasis and clarity through strategic repetition.
-Only flag truly excessive redundancy (3+ identical repetitions) that hurts readability."""
+Be sophisticated - understand that emphasis and strategic repetition serve critical business communication purposes."""
 
     try:
         response = llm.invoke([
-            SystemMessage(content="You are a business report editor who understands that strategic repetition aids clarity and emphasis."),
-            HumanMessage(content=prompt.format(report=report[:8000]))  # Limit to avoid token issues
+            SystemMessage(content="You are an expert business communication analyst using GPT-4.1's superior comprehension. You understand the difference between strategic emphasis and true redundancy."),
+            HumanMessage(content=prompt.format(report=report[:10000]))  # Larger context with GPT-4.1
         ])
         
         result = json.loads(response.content)
         return result
         
     except Exception as e:
-        logger.warning(f"LLM redundancy check failed: {e}")
+        logger.warning(f"GPT-4.1 redundancy check failed: {e}")
         return {
             "redundancy_score": 8,
             "redundant_sections": [],
@@ -528,7 +741,7 @@ Only flag major tone shifts that disrupt the reading experience."""
 def verify_citations_llm(report: str, research_data: Dict[str, Any], llm: ChatOpenAI) -> Dict[str, Any]:
     """Verify that statistical claims and data points are properly cited"""
     
-    # FIXED: Handle both string and dict citation formats
+    # Handle both string and dict citation formats
     citations = research_data.get("citations", [])
     
     if not citations:
@@ -537,10 +750,19 @@ def verify_citations_llm(report: str, research_data: Dict[str, Any], llm: ChatOp
         # Citations are strings (from enhanced research node)
         citation_text = "\n".join([f"- {c}" for c in citations[:10]])
     elif isinstance(citations[0], dict):
-        # Citations are dicts (legacy format)
-        citation_text = "\n".join([f"- {c.get('title', '')}: {c.get('summary', '')}" for c in citations[:10]])
+        # Citations are dicts (new enhanced format)
+        citation_text = "\n".join([f"- {c.get('source', '')} {c.get('year', '')}: {c.get('type', '')}" for c in citations[:10]])
     else:
         citation_text = "No citations available"
+    
+    # Also extract specific benchmarks from research data
+    benchmarks = []
+    if "valuation_benchmarks" in research_data:
+        for key, value in research_data["valuation_benchmarks"].items():
+            if isinstance(value, dict):
+                benchmarks.append(f"{key}: {value.get('range', '')} ({value.get('source', '')} {value.get('year', '')})")
+    
+    benchmarks_text = "\n".join(benchmarks[:10])
     
     # Common business knowledge that doesn't need citations
     uncited_whitelist_phrases = [
@@ -567,8 +789,11 @@ def verify_citations_llm(report: str, research_data: Dict[str, Any], llm: ChatOp
 Report:
 {report}
 
-Available Research Data:
+Available Research Citations:
 {citations}
+
+Available Benchmarks:
+{benchmarks}
 
 Check for:
 1. Industry statistics without sources (e.g., "manufacturing sector grew 15%")
@@ -604,6 +829,7 @@ General business advice and common industry knowledge should NOT be flagged."""
             HumanMessage(content=prompt.format(
                 report=report[:6000],
                 citations=citation_text[:2000],
+                benchmarks=benchmarks_text[:1000],
                 whitelist=", ".join(uncited_whitelist_phrases[:10])
             ))
         ])
@@ -696,7 +922,7 @@ Ensure all content remains professional, specific, and actionable."""
 
 def polish_report_llm(summary_result: Dict[str, Any], scoring_result: Dict[str, Any], 
                      llm: ChatOpenAI) -> Dict[str, str]:
-    """Apply final polish to make the report more impactful"""
+    """Apply final polish using GPT-4.1's superior writing capabilities"""
     
     prompt = """Polish this executive summary to make it more impactful and actionable.
 
@@ -709,20 +935,30 @@ Readiness Level: {level}
 Guidelines:
 1. Start with a powerful, specific opening statement about the business's exit readiness
 2. Use concrete numbers and timeframes where possible
-3. End with a compelling call-to-action
-4. Keep the same length and all factual content
-5. Make it feel personalized to this specific business
+3. Add motivating language that inspires action without overpromising
+4. Keep the same length and all factual content unchanged
+5. Make it feel personalized to this specific business owner
+6. Use varied sentence structure for better flow
+7. Include power words that convey urgency and opportunity
+
+Specific improvements to make:
+- Replace passive voice with active voice
+- Add emotional resonance while maintaining professionalism
+- Create a sense of momentum and possibility
+- Ensure the call-to-action is compelling
+- Make numbers and statistics stand out
 
 Provide the polished version in this exact JSON format:
 {
     "executive_summary": "polished executive summary"
 }
 
-Maintain all facts and scores. Only improve clarity, impact, and readability."""
+Maintain all facts, scores, and data points exactly. Only improve clarity, impact, flow, and emotional resonance.
+Remove any markdown formatting - use plain text only."""
 
     try:
         response = llm.invoke([
-            SystemMessage(content="You are an expert business advisor crafting impactful exit readiness assessments."),
+            SystemMessage(content="You are a master business communication expert using GPT-4.1. Create compelling, action-oriented content that motivates business owners while maintaining complete accuracy. Your writing should be clear, powerful, and personalized."),
             HumanMessage(content=prompt.format(
                 exec_summary=summary_result.get("executive_summary", ""),
                 score=scoring_result.get("overall_score", 0),
@@ -733,12 +969,66 @@ Maintain all facts and scores. Only improve clarity, impact, and readability."""
         result = json.loads(response.content)
         
         if result.get("executive_summary"):
-            return {"executive_summary": result["executive_summary"]}
+            # Also polish recommendations if they exist
+            if summary_result.get("recommendations"):
+                polished_recs = polish_recommendations_llm(
+                    summary_result.get("recommendations", ""),
+                    scoring_result,
+                    llm
+                )
+                if polished_recs:
+                    result["recommendations"] = polished_recs
+                    
+            return result
         return {}
         
     except Exception as e:
-        logger.warning(f"LLM report polishing failed: {e}")
+        logger.warning(f"GPT-4.1 report polishing failed: {e}")
         return {}
+
+
+def polish_recommendations_llm(recommendations: str, scoring_result: Dict[str, Any], 
+                              llm: ChatOpenAI) -> str:
+    """Polish recommendations section with GPT-4.1 for maximum impact"""
+    
+    prompt = """Polish these recommendations to be more impactful while maintaining accuracy.
+
+Current Recommendations:
+{recommendations}
+
+Primary Focus Area: {focus}
+Overall Score: {score}/10
+
+Improvements to make:
+1. Make each action item more specific and concrete
+2. Ensure every outcome is quantified with data
+3. Add urgency without being alarmist
+4. Use action verbs that inspire immediate implementation
+5. Make the language more dynamic and engaging
+
+Keep the exact same structure and facts. Only improve:
+- Action verb choices (implement → launch, create → develop, etc.)
+- Outcome descriptions (make them more vivid)
+- Transitions between sections
+- Overall energy and momentum
+
+Return the polished recommendations as plain text (no JSON wrapper)."""
+
+    try:
+        response = llm.invoke([
+            SystemMessage(content="You are a business strategy expert using GPT-4.1 to create compelling action plans. Make recommendations feel urgent, specific, and achievable."),
+            HumanMessage(content=prompt.format(
+                recommendations=recommendations[:3000],
+                focus=scoring_result.get("focus_areas", {}).get("primary", {}).get("category", ""),
+                score=scoring_result.get("overall_score", 0)
+            ))
+        ])
+        
+        return response.content.strip()
+        
+    except Exception as e:
+        logger.warning(f"GPT-4.1 recommendations polishing failed: {e}")
+        return recommendations
 
 
 def regenerate_final_report(summary_result: Dict[str, Any], overall_score: float, 
@@ -749,17 +1039,18 @@ def regenerate_final_report(summary_result: Dict[str, Any], overall_score: float
     
     # Executive Summary
     if summary_result.get("executive_summary"):
-        report_parts.append("## Executive Summary\n")
+        report_parts.append("EXECUTIVE SUMMARY\n")
         report_parts.append(summary_result["executive_summary"])
         report_parts.append("\n")
     
     # Overall Score
-    report_parts.append(f"\n## Overall Exit Readiness Score: {overall_score}/10\n")
-    report_parts.append(f"**Readiness Level**: {readiness_level}\n")
+    report_parts.append(f"\nYOUR EXIT READINESS SCORE\n")
+    report_parts.append(f"Overall Score: {overall_score}/10\n")
+    report_parts.append(f"Readiness Level: {readiness_level}\n")
     
     # Category Summaries
     if summary_result.get("category_summaries"):
-        report_parts.append("\n## Detailed Assessment by Category\n")
+        report_parts.append("\nDETAILED ANALYSIS BY CATEGORY\n")
         
         # Handle both string and dict formats
         category_summaries = summary_result.get("category_summaries")
@@ -769,17 +1060,18 @@ def regenerate_final_report(summary_result: Dict[str, Any], overall_score: float
             report_parts.append("\n")
         elif isinstance(category_summaries, dict):
             # If it's a dict, iterate through categories
-            category_order = ["financial_readiness", "revenue_quality", "operational_resilience"]
+            category_order = ["financial_readiness", "revenue_quality", "operational_resilience", 
+                            "owner_dependence", "growth_value"]
             for category in category_order:
                 if category in category_summaries:
                     category_title = category.replace("_", " ").title()
-                    report_parts.append(f"\n### {category_title}\n")
+                    report_parts.append(f"\n{category_title}\n")
                     report_parts.append(category_summaries[category])
                     report_parts.append("\n")
     
     # Recommendations
     if summary_result.get("recommendations"):
-        report_parts.append("\n## Strategic Recommendations\n")
+        report_parts.append("\nPERSONALIZED RECOMMENDATIONS\n")
         
         # Handle both string and dict formats
         recommendations = summary_result.get("recommendations")
@@ -792,16 +1084,22 @@ def regenerate_final_report(summary_result: Dict[str, Any], overall_score: float
             for category, recs in recommendations.items():
                 if recs:
                     category_title = category.replace("_", " ").title()
-                    report_parts.append(f"\n### {category_title}\n")
+                    report_parts.append(f"\n{category_title}\n")
                     if isinstance(recs, list):
                         for i, rec in enumerate(recs, 1):
                             report_parts.append(f"{i}. {rec}\n")
                     else:
                         report_parts.append(f"{recs}\n")
     
+    # Industry Context
+    if summary_result.get("industry_context"):
+        report_parts.append("\nINDUSTRY & MARKET CONTEXT\n")
+        report_parts.append(summary_result["industry_context"])
+        report_parts.append("\n")
+    
     # Next Steps
     if summary_result.get("next_steps"):
-        report_parts.append("\n## Next Steps\n")
+        report_parts.append("\nYOUR NEXT STEPS\n")
         report_parts.append(summary_result["next_steps"])
     
     return "\n".join(report_parts)
