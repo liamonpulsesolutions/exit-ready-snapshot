@@ -2,7 +2,7 @@
 Summary node for LangGraph workflow.
 Enhanced with LLM generation, timeline adaptation, word limits, and outcome framing rules.
 Creates personalized, intelligent report sections with proper outcome language.
-FIXED: Handle missing data gracefully.
+FIXED: Handle missing data gracefully and robust percentage parsing.
 """
 
 import logging
@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 import os
 import json
+import re
 
 # Load environment variables if not already loaded
 from dotenv import load_dotenv
@@ -30,6 +31,53 @@ from langchain.schema import SystemMessage, HumanMessage
 from workflow.core.prompts import get_locale_terms
 
 logger = logging.getLogger(__name__)
+
+
+def parse_percentage_range(value_str: str, default: str = "10-20%") -> str:
+    """
+    Parse various percentage formats into a standardized range.
+    
+    Handles:
+    - "15%" -> "10-20%"
+    - "10-20%" -> "10-20%"
+    - "Up to 15% increase" -> "10-15%"
+    - "15-25% improvement" -> "15-25%"
+    - Invalid formats -> default
+    """
+    if not value_str or not isinstance(value_str, str):
+        return default
+    
+    try:
+        # Extract all numbers from the string
+        numbers = re.findall(r'\d+\.?\d*', value_str)
+        
+        if not numbers:
+            return default
+        
+        # Convert to floats
+        nums = [float(n) for n in numbers]
+        
+        if len(nums) >= 2:
+            # Already a range
+            return f"{int(nums[0])}-{int(nums[1])}%"
+        elif len(nums) == 1:
+            # Single number - create range
+            num = int(nums[0])
+            if "up to" in value_str.lower():
+                # "Up to X%" -> "Y-X%" where Y is 2/3 of X
+                lower = max(5, int(num * 0.67))
+                return f"{lower}-{num}%"
+            else:
+                # Single percentage -> create ±5 range
+                lower = max(5, num - 5)
+                upper = num + 5
+                return f"{lower}-{upper}%"
+        else:
+            return default
+            
+    except Exception as e:
+        logger.warning(f"Failed to parse percentage '{value_str}': {e}")
+        return default
 
 
 def get_timeline_urgency(exit_timeline: str) -> Dict[str, Any]:
@@ -150,20 +198,19 @@ Please note that businesses in your industry typically see significant value imp
     if isinstance(valuation_data.get('base_EBITDA'), dict):
         ebitda_range = valuation_data['base_EBITDA'].get('range', '4-6x')
     
-    # OUTCOME FRAMING: Extract impact ranges from research
+    # OUTCOME FRAMING: Extract impact ranges from research with robust parsing
     improvements = research_data.get('improvement_strategies', {})
     primary_impact = "20-30%"  # Default range
-    if focus_areas.get('primary'):
-        primary_cat = focus_areas['primary']['category']
-        if primary_cat in improvements:
-            impact = improvements[primary_cat].get('value_impact', '20-30%')
-            # Ensure it's a range
-            if '-' not in str(impact) and '%' in str(impact):
-                # Convert single number to range
-                num = int(impact.replace('%', ''))
-                primary_impact = f"{num-5}-{num+5}%"
-            else:
-                primary_impact = impact
+    
+    try:
+        if focus_areas.get('primary'):
+            primary_cat = focus_areas['primary']['category']
+            if primary_cat in improvements and isinstance(improvements[primary_cat], dict):
+                impact_str = improvements[primary_cat].get('value_impact', '20-30%')
+                primary_impact = parse_percentage_range(impact_str, "20-30%")
+    except Exception as e:
+        logger.warning(f"Failed to extract primary impact: {e}")
+        primary_impact = "20-30%"
     
     prompt = f"""Create an executive summary for this Exit Ready Snapshot assessment.
 
@@ -263,12 +310,13 @@ def generate_category_summary_llm(
     source = improvement_strategy.get('source', 'Industry best practices')
     year = improvement_strategy.get('year', '2023')
     
-    # OUTCOME FRAMING: Ensure value impact is a range
-    value_impact = improvement_strategy.get('value_impact', '10-20%')
-    if '-' not in str(value_impact) and '%' in str(value_impact):
-        # Convert single number to range
-        num = int(value_impact.replace('%', ''))
-        value_impact = f"{num-5}-{num+5}%"
+    # FIXED: Robust parsing of value impact
+    try:
+        value_impact_str = improvement_strategy.get('value_impact', '10-20%')
+        value_impact = parse_percentage_range(value_impact_str, "10-20%")
+    except Exception as e:
+        logger.warning(f"Failed to parse value_impact for {category}: {e}")
+        value_impact = "10-20%"
     
     # Adjust recommendations based on exit timeline
     timeline_adjustments = {
@@ -704,7 +752,7 @@ For personalized guidance on executing these improvements, contact us at success
 def summary_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Enhanced summary node with timeline adaptation, word limits, and outcome framing rules.
-    FIXED: Handle missing data gracefully.
+    FIXED: Handle missing data gracefully with robust percentage parsing.
     
     This node:
     1. Detects exit timeline urgency

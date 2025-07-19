@@ -1,7 +1,7 @@
 """
 LLM utility functions for the Exit Ready Snapshot workflow.
 Provides centralized functions for JSON parsing, word counting, and LLM management.
-Fixes the core issues with JSON response formatting across all nodes.
+FIXED: Model name extraction and JSON response format handling.
 """
 
 import json
@@ -23,6 +23,7 @@ def get_llm_with_fallback(
 ) -> ChatOpenAI:
     """
     Create an LLM instance with proper model names and JSON response format support.
+    FIXED: Store model name as custom attribute for later retrieval.
     
     Args:
         model: Model name (will be corrected if using old names)
@@ -60,17 +61,24 @@ def get_llm_with_fallback(
     
     try:
         llm = ChatOpenAI(**llm_kwargs)
+        
+        # FIXED: Store the model name as a custom attribute
+        llm._custom_model_name = corrected_model
+        
         logger.debug(f"Created LLM: {corrected_model} (temp={temperature})")
         return llm
     except Exception as e:
         logger.error(f"Failed to create LLM with model {corrected_model}: {e}")
         # Fallback to a known good model
         logger.info("Falling back to gpt-4.1-mini")
-        return ChatOpenAI(
+        fallback_llm = ChatOpenAI(
             model="gpt-4.1-mini",
             temperature=temperature,
             max_tokens=max_tokens
         )
+        # Store model name on fallback too
+        fallback_llm._custom_model_name = "gpt-4.1-mini"
+        return fallback_llm
 
 
 def extract_json_from_text(text: str) -> Optional[str]:
@@ -214,7 +222,7 @@ def ensure_json_response(
 ) -> Dict[str, Any]:
     """
     Wrapper for LLM calls that ensures JSON output with retry logic.
-    FIXED: Access model name correctly from ChatOpenAI instance.
+    FIXED: Properly extract model name and handle JSON response format.
     
     Args:
         llm: The LLM instance to use
@@ -238,28 +246,68 @@ def ensure_json_response(
         try:
             logger.debug(f"{function_name}: LLM call attempt {attempt + 1}/{retry_count}")
             
-            # FIXED: Access the model name correctly - try multiple attributes
-            if hasattr(llm, 'model_name'):
+            # FIXED: Extract model name with multiple fallback options
+            model_name = None
+            
+            # Try custom attribute first (from our get_llm_with_fallback)
+            if hasattr(llm, '_custom_model_name'):
+                model_name = llm._custom_model_name
+            # Try standard attributes
+            elif hasattr(llm, 'model_name'):
                 model_name = llm.model_name
             elif hasattr(llm, 'model'):
                 model_name = llm.model
+            # Try private attributes as last resort
+            elif hasattr(llm, '_model_name'):
+                model_name = llm._model_name
             elif hasattr(llm, '_llm_type'):
                 model_name = llm._llm_type
-            else:
-                # Fallback - use a default
-                model_name = "gpt-4.1-mini"
-                logger.warning(f"{function_name}: Could not determine model name, using default: {model_name}")
             
-            # Create a new LLM instance with JSON response format for this specific call
-            json_llm = ChatOpenAI(
-                model=model_name,
-                temperature=llm.temperature,
-                max_tokens=llm.max_tokens,
-                model_kwargs={"response_format": {"type": "json_object"}}
-            )
+            # If we still don't have a model name, try to extract from string representation
+            if not model_name:
+                llm_str = str(llm)
+                # Look for patterns like "model='gpt-4.1-mini'"
+                model_match = re.search(r"model=['\"]([^'\"]+)['\"]", llm_str)
+                if model_match:
+                    model_name = model_match.group(1)
+                else:
+                    # Final fallback
+                    model_name = "gpt-4.1-mini"
+                    logger.warning(f"{function_name}: Could not determine model name, using default: {model_name}")
             
-            # Make the LLM call
-            response = json_llm.invoke(messages)
+            logger.debug(f"{function_name}: Using model: {model_name}")
+            
+            # FIXED: Instead of creating a new LLM, use invoke with model_kwargs
+            start_time = time.time()
+            
+            # Try to invoke with JSON response format
+            try:
+                # First try: Use model_kwargs in invoke
+                response = llm.invoke(
+                    messages,
+                    config={
+                        "model_kwargs": {
+                            "response_format": {"type": "json_object"}
+                        }
+                    }
+                )
+            except Exception as e:
+                # Fallback: Create new LLM instance with JSON format
+                logger.debug(f"{function_name}: Direct invoke with JSON format failed, creating new instance")
+                json_llm = ChatOpenAI(
+                    model=model_name,
+                    temperature=getattr(llm, 'temperature', 0.1),
+                    max_tokens=getattr(llm, 'max_tokens', 4000),
+                    model_kwargs={"response_format": {"type": "json_object"}}
+                )
+                response = json_llm.invoke(messages)
+            
+            elapsed = time.time() - start_time
+            logger.debug(f"{function_name}: LLM call took {elapsed:.2f}s")
+            
+            # Log warning if call was suspiciously fast (likely initialization failure)
+            if elapsed < 0.1:
+                logger.warning(f"{function_name}: LLM call completed in {elapsed:.3f}s - possible initialization failure")
             
             # Extract content
             if hasattr(response, 'content'):
