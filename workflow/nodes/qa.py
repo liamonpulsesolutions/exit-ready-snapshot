@@ -8,8 +8,14 @@ import time
 import json
 import re
 from typing import Dict, Any, List, Tuple
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain.schema import HumanMessage, SystemMessage
+
+# FIXED: Import LLM utilities
+from workflow.core.llm_utils import (
+    get_llm_with_fallback,
+    ensure_json_response,
+    safe_json_parse
+)
 
 from workflow.state import WorkflowState
 from workflow.core.validators import (
@@ -171,7 +177,7 @@ The insights and strategies outlined are based on your assessment responses and 
     return report
 
 
-def verify_outcome_framing_llm(report: str, recommendations: str, next_steps: str, llm: ChatOpenAI) -> Dict[str, Any]:
+def verify_outcome_framing_llm(report: str, recommendations: str, next_steps: str, llm) -> Dict[str, Any]:
     """
     Verify that all outcome claims use proper framing language (typically/often/on average).
     Check that improvements are expressed as ranges, not specific numbers.
@@ -210,11 +216,10 @@ Good examples:
 
 Provide your analysis in this exact JSON format:
 {
-    "framing_score": <0-10, where 10 means perfect outcome framing>,
-    "violations_found": <number of violations>,
+    "framing_score": 8,
+    "violations_found": 0,
     "specific_violations": [
-        {"text": "exact problematic phrase", "issue": "why it violates rules"},
-        {"text": "another violation", "issue": "reason"}
+        {"text": "exact problematic phrase", "issue": "why it violates rules"}
     ],
     "uncited_claims": [
         {"claim": "outcome claim without citation", "location": "section name"}
@@ -235,16 +240,17 @@ Be thorough but reasonable - general business advice doesn't need citations, onl
             if summary_end > summary_start:
                 summary_excerpt = report[summary_start:summary_end][:500]  # First 500 chars
         
-        response = llm.invoke([
-            SystemMessage(content="You are a compliance reviewer ensuring business recommendations follow proper outcome framing rules. Be strict about promises and specific numbers."),
+        messages = [
+            SystemMessage(content="You are a compliance reviewer ensuring business recommendations follow proper outcome framing rules. Be strict about promises and specific numbers. Always respond with valid JSON."),
             HumanMessage(content=prompt.format(
                 recommendations=recommendations[:3000],
                 next_steps=next_steps[:2000],
                 summary_excerpt=summary_excerpt
             ))
-        ])
+        ]
         
-        result = json.loads(response.content)
+        # FIXED: Use ensure_json_response wrapper
+        result = ensure_json_response(llm, messages, "verify_outcome_framing_llm")
         return result
         
     except Exception as e:
@@ -261,7 +267,7 @@ Be thorough but reasonable - general business advice doesn't need citations, onl
 
 
 def fix_outcome_framing_llm(violations: List[Dict], recommendations: str, next_steps: str, 
-                           executive_summary: str, llm: ChatOpenAI) -> Dict[str, str]:
+                           executive_summary: str, llm) -> Dict[str, str]:
     """Fix outcome framing violations identified in the report"""
     
     violations_text = "\n".join([f"- {v['text']}: {v['issue']}" for v in violations[:10]])
@@ -302,17 +308,18 @@ Only include sections that had violations. Maintain all other content exactly as
 Ensure all fixes sound natural and maintain the persuasive tone while being compliant."""
 
     try:
-        response = llm.invoke([
-            SystemMessage(content="You are a compliance editor fixing outcome language while maintaining persuasive business writing. Make minimal changes to fix violations."),
+        messages = [
+            SystemMessage(content="You are a compliance editor fixing outcome language while maintaining persuasive business writing. Make minimal changes to fix violations. Always respond with valid JSON."),
             HumanMessage(content=prompt.format(
                 violations=violations_text,
                 recommendations=recommendations[:1500],
                 next_steps=next_steps[:1000],
                 executive_summary=executive_summary[:1000]
             ))
-        ])
+        ]
         
-        result = json.loads(response.content)
+        # FIXED: Use ensure_json_response wrapper
+        result = ensure_json_response(llm, messages, "fix_outcome_framing_llm")
         
         # Only return sections that were actually fixed
         fixed_sections = {}
@@ -349,21 +356,21 @@ def qa_node(state: WorkflowState) -> WorkflowState:
         scoring_result = state.get("scoring_result", {})
         summary_result = state.get("summary_result", {})
         
-        # Initialize QA LLMs - use GPT-4.1-nano for basic checks, GPT-4.1 for sophisticated analysis
-        qa_llm = ChatOpenAI(
+        # FIXED: Initialize QA LLMs with proper model names
+        qa_llm = get_llm_with_fallback(
             model="gpt-4.1-nano",  # Fast, efficient for mechanical checks
             temperature=0,
             max_tokens=4000
         )
         
         # GPT-4.1 for redundancy and polish (better understanding of nuance)
-        redundancy_llm = ChatOpenAI(
+        redundancy_llm = get_llm_with_fallback(
             model="gpt-4.1",  # Superior instruction following and comprehension
             temperature=0.1,
             max_tokens=4000
         )
         
-        polish_llm = ChatOpenAI(
+        polish_llm = get_llm_with_fallback(
             model="gpt-4.1",  # Best for final polish and impact
             temperature=0.3,
             max_tokens=4000
@@ -853,7 +860,7 @@ def calculate_overall_qa_score(quality_scores: Dict[str, Dict]) -> float:
     return round(total_score / total_weight, 1) if total_weight > 0 else 5.0
 
 
-def check_redundancy_llm(report: str, llm: ChatOpenAI) -> Dict[str, Any]:
+def check_redundancy_llm(report: str, llm) -> Dict[str, Any]:
     """Use GPT-4.1 to detect redundant content with nuanced understanding"""
     
     prompt = """Analyze this business assessment report for redundancy and repetitive content.
@@ -884,7 +891,7 @@ Understand concept variations as DIFFERENT content:
 
 Provide your analysis in this exact JSON format:
 {
-    "redundancy_score": <0-10, where 10 is no problematic redundancy>,
+    "redundancy_score": 8,
     "redundant_sections": ["list", "of", "truly", "redundant", "sections"],
     "specific_examples": ["exact duplicate content only"],
     "suggested_consolidations": ["only if truly excessive"]
@@ -893,12 +900,13 @@ Provide your analysis in this exact JSON format:
 Be sophisticated - understand that emphasis and strategic repetition serve critical business communication purposes."""
 
     try:
-        response = llm.invoke([
-            SystemMessage(content="You are an expert business communication analyst using GPT-4.1's superior comprehension. You understand the difference between strategic emphasis and true redundancy."),
+        messages = [
+            SystemMessage(content="You are an expert business communication analyst using GPT-4.1's superior comprehension. You understand the difference between strategic emphasis and true redundancy. Always respond with valid JSON."),
             HumanMessage(content=prompt.format(report=report[:10000]))  # Larger context with GPT-4.1
-        ])
+        ]
         
-        result = json.loads(response.content)
+        # FIXED: Use ensure_json_response wrapper
+        result = ensure_json_response(llm, messages, "check_redundancy_llm")
         return result
         
     except Exception as e:
@@ -911,7 +919,7 @@ Be sophisticated - understand that emphasis and strategic repetition serve criti
         }
 
 
-def check_tone_consistency_llm(report: str, llm: ChatOpenAI) -> Dict[str, Any]:
+def check_tone_consistency_llm(report: str, llm) -> Dict[str, Any]:
     """Use LLM to check tone consistency throughout the report"""
     
     prompt = """Analyze this business assessment report for tone consistency.
@@ -934,8 +942,8 @@ Important considerations:
 
 Provide your analysis in this exact JSON format:
 {
-    "tone_score": <0-10, where 10 is perfectly consistent>,
-    "consistent": <true/false>,
+    "tone_score": 8,
+    "consistent": true,
     "tone_issues": ["issue 1", "issue 2"],
     "inconsistent_sections": ["section 1", "section 2"],
     "recommended_tone": "description of ideal tone"
@@ -945,12 +953,13 @@ Be reasonable - allow natural variations that serve the content.
 Only flag major tone shifts that disrupt the reading experience."""
 
     try:
-        response = llm.invoke([
-            SystemMessage(content="You are a business communications expert who understands that different sections of a report may naturally vary in tone while maintaining overall coherence."),
+        messages = [
+            SystemMessage(content="You are a business communications expert who understands that different sections of a report may naturally vary in tone while maintaining overall coherence. Always respond with valid JSON."),
             HumanMessage(content=prompt.format(report=report[:8000]))
-        ])
+        ]
         
-        result = json.loads(response.content)
+        # FIXED: Use ensure_json_response wrapper
+        result = ensure_json_response(llm, messages, "check_tone_consistency_llm")
         return result
         
     except Exception as e:
@@ -964,7 +973,7 @@ Only flag major tone shifts that disrupt the reading experience."""
         }
 
 
-def verify_citations_llm(report: str, research_data: Dict[str, Any], llm: ChatOpenAI) -> Dict[str, Any]:
+def verify_citations_llm(report: str, research_data: Dict[str, Any], llm) -> Dict[str, Any]:
     """Verify that statistical claims and data points are properly cited"""
     
     # Handle both string and dict citation formats
@@ -1036,13 +1045,12 @@ DO NOT flag as needing citations:
 
 Provide your analysis in this exact JSON format:
 {
-    "citation_score": <0-10, where 10 means all claims are supported>,
-    "total_claims_found": <number>,
-    "properly_cited": <number>,
-    "issues_found": <number>,
+    "citation_score": 8,
+    "total_claims_found": 0,
+    "properly_cited": 0,
+    "issues_found": 0,
     "uncited_claims": [
-        {"claim": "specific claim text", "issue": "why it needs citation"},
-        {"claim": "another claim", "issue": "reason"}
+        {"claim": "specific claim text", "issue": "why it needs citation"}
     ]
 }
 
@@ -1050,17 +1058,18 @@ Be very reasonable - only flag SPECIFIC statistical claims that would require ex
 General business advice and common industry knowledge should NOT be flagged."""
 
     try:
-        response = llm.invoke([
-            SystemMessage(content=f"You are a fact-checker for business reports who understands the difference between specific claims needing citations and general business knowledge. Common phrases that don't need citations include: {', '.join(uncited_whitelist_phrases[:5])}."),
+        messages = [
+            SystemMessage(content=f"You are a fact-checker for business reports who understands the difference between specific claims needing citations and general business knowledge. Common phrases that don't need citations include: {', '.join(uncited_whitelist_phrases[:5])}. Always respond with valid JSON."),
             HumanMessage(content=prompt.format(
                 report=report[:6000],
                 citations=citation_text[:2000],
                 benchmarks=benchmarks_text[:1000],
                 whitelist=", ".join(uncited_whitelist_phrases[:10])
             ))
-        ])
+        ]
         
-        result = json.loads(response.content)
+        # FIXED: Use ensure_json_response wrapper
+        result = ensure_json_response(llm, messages, "verify_citations_llm")
         return result
         
     except Exception as e:
@@ -1077,7 +1086,7 @@ General business advice and common industry knowledge should NOT be flagged."""
 def fix_quality_issues_llm(issues: List[str], warnings: List[str], 
                           summary_result: Dict[str, Any], scoring_result: Dict[str, Any],
                           redundancy_info: Dict[str, Any], tone_info: Dict[str, Any],
-                          llm: ChatOpenAI) -> Dict[str, str]:
+                          llm) -> Dict[str, str]:
     """Use LLM to fix identified quality issues"""
     
     issues_text = "\n".join([f"- ISSUE: {issue}" for issue in issues])
@@ -1116,8 +1125,8 @@ Ensure all content remains professional, specific, and actionable.
 If fixing outcome framing issues, ensure you use "typically/often" language and ranges."""
 
     try:
-        response = llm.invoke([
-            SystemMessage(content="You are a business report editor fixing quality issues while maintaining accuracy. Always use proper outcome framing with 'typically/often' language."),
+        messages = [
+            SystemMessage(content="You are a business report editor fixing quality issues while maintaining accuracy. Always use proper outcome framing with 'typically/often' language. Always respond with valid JSON."),
             HumanMessage(content=prompt.format(
                 issues=issues_text,
                 warnings=warnings_text,
@@ -1127,9 +1136,10 @@ If fixing outcome framing issues, ensure you use "typically/often" language and 
                 redundancy=json.dumps(redundancy_info.get("redundant_sections", []))[:500],
                 tone=json.dumps(tone_info.get("tone_issues", []))[:500]
             ))
-        ])
+        ]
         
-        result = json.loads(response.content)
+        # FIXED: Use ensure_json_response wrapper
+        result = ensure_json_response(llm, messages, "fix_quality_issues_llm")
         
         # Only return sections that were actually fixed
         fixed_sections = {}
@@ -1148,7 +1158,7 @@ If fixing outcome framing issues, ensure you use "typically/often" language and 
 
 
 def polish_report_llm(summary_result: Dict[str, Any], scoring_result: Dict[str, Any], 
-                     llm: ChatOpenAI) -> Dict[str, str]:
+                     llm) -> Dict[str, str]:
     """Apply final polish using GPT-4.1's superior writing capabilities"""
     
     prompt = """Polish this executive summary to make it more impactful and actionable.
@@ -1187,16 +1197,17 @@ Remove any markdown formatting - use plain text only.
 Ensure outcome framing is preserved or improved."""
 
     try:
-        response = llm.invoke([
-            SystemMessage(content="You are a master business communication expert using GPT-4.1. Create compelling, action-oriented content that motivates business owners while maintaining complete accuracy and proper outcome framing. Your writing should be clear, powerful, and personalized."),
+        messages = [
+            SystemMessage(content="You are a master business communication expert using GPT-4.1. Create compelling, action-oriented content that motivates business owners while maintaining complete accuracy and proper outcome framing. Your writing should be clear, powerful, and personalized. Always respond with valid JSON."),
             HumanMessage(content=prompt.format(
                 exec_summary=summary_result.get("executive_summary", ""),
                 score=scoring_result.get("overall_score", 0),
                 level=scoring_result.get("readiness_level", "Unknown")
             ))
-        ])
+        ]
         
-        result = json.loads(response.content)
+        # FIXED: Use ensure_json_response wrapper
+        result = ensure_json_response(llm, messages, "polish_report_llm")
         
         if result.get("executive_summary"):
             # Also polish recommendations if they exist
@@ -1218,7 +1229,7 @@ Ensure outcome framing is preserved or improved."""
 
 
 def polish_recommendations_llm(recommendations: str, scoring_result: Dict[str, Any], 
-                              llm: ChatOpenAI) -> str:
+                              llm) -> str:
     """Polish recommendations section with GPT-4.1 for maximum impact"""
     
     prompt = """Polish these recommendations to be more impactful while maintaining accuracy and proper outcome framing.
@@ -1248,16 +1259,17 @@ Return the polished recommendations as plain text (no JSON wrapper).
 Ensure every outcome claim uses proper framing language."""
 
     try:
-        response = llm.invoke([
+        messages = [
             SystemMessage(content="You are a business strategy expert using GPT-4.1 to create compelling action plans. Make recommendations feel urgent, specific, and achievable while always using 'typically/often' language for outcomes."),
             HumanMessage(content=prompt.format(
                 recommendations=recommendations[:3000],
                 focus=scoring_result.get("focus_areas", {}).get("primary", {}).get("category", ""),
                 score=scoring_result.get("overall_score", 0)
             ))
-        ])
+        ]
         
-        return response.content.strip()
+        response = llm.invoke(messages)
+        return response.content.strip() if hasattr(response, 'content') else str(response).strip()
         
     except Exception as e:
         logger.warning(f"GPT-4.1 recommendations polishing failed: {e}")

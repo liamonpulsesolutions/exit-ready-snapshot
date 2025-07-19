@@ -17,7 +17,8 @@ if not os.getenv('OPENAI_API_KEY'):
     if env_path.exists():
         load_dotenv(env_path)
 
-from langchain_openai import ChatOpenAI
+# FIXED: Import LLM utilities
+from workflow.core.llm_utils import get_llm_with_fallback, ensure_json_response
 from langchain.schema import SystemMessage, HumanMessage
 
 # Import enhanced scoring functions from the correct location
@@ -40,7 +41,7 @@ def generate_category_insights(
     score_data: Dict[str, Any],
     responses: Dict[str, Any],
     research_data: Dict[str, Any],
-    llm: ChatOpenAI
+    llm
 ) -> str:
     """Generate 2-3 sentences of intelligent commentary for a scoring category"""
     
@@ -131,12 +132,22 @@ Provide insight about their competitive positioning and growth story in {industr
     prompt = category_prompts.get(category, "Provide 2-3 sentences of insight about this score.")
     
     try:
-        response = llm.invoke([
+        # Log before LLM call
+        logger.debug(f"Generating insights for {category} with score {score_data['score']}")
+        
+        messages = [
             SystemMessage(content="You are an M&A advisor providing insights on business exit readiness. Be concise and specific. Reference industry-specific benchmarks where relevant."),
             HumanMessage(content=prompt)
-        ])
+        ]
         
-        return response.content.strip()
+        # FIXED: Direct text response, no JSON needed
+        response = llm.invoke(messages)
+        insight = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+        
+        # Log after LLM call
+        logger.debug(f"Generated insight for {category}: {insight[:100]}...")
+        
+        return insight
     except Exception as e:
         logger.error(f"LLM insight generation failed for {category}: {e}")
         # Fallback to template-based insight
@@ -173,8 +184,8 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["current_stage"] = "scoring"
         state["messages"].append(f"Enhanced scoring started at {start_time.isoformat()}")
         
-        # Initialize LLM for insights
-        insight_llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.3)
+        # FIXED: Initialize LLM for insights with proper model name and temperature
+        insight_llm = get_llm_with_fallback("gpt-4.1-mini", temperature=0.3)
         
         # Get data from previous stages
         anonymized_data = state.get("anonymized_data", {})
@@ -211,7 +222,9 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         
         # 1. Score Owner Dependence (with industry-specific days threshold)
         logger.info("Scoring owner dependence with dynamic benchmarks...")
+        logger.debug(f"Calling score_owner_dependence with responses: {list(responses.keys())}")
         owner_score = score_owner_dependence(responses, research_data)
+        logger.debug(f"Owner dependence score returned: {owner_score['score']}")
         
         # Add LLM insight
         owner_insight = generate_category_insights(
@@ -224,7 +237,9 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         
         # 2. Score Revenue Quality (with industry-specific concentration threshold)
         logger.info("Scoring revenue quality with dynamic benchmarks...")
+        logger.debug("Calling score_revenue_quality")
         revenue_score = score_revenue_quality(responses, research_data)
+        logger.debug(f"Revenue quality score returned: {revenue_score['score']}")
         
         # Add LLM insight
         revenue_insight = generate_category_insights(
@@ -237,7 +252,9 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         
         # 3. Score Financial Readiness (with industry-specific margin expectations)
         logger.info("Scoring financial readiness with dynamic benchmarks...")
+        logger.debug("Calling score_financial_readiness")
         financial_score = score_financial_readiness(responses, research_data)
+        logger.debug(f"Financial readiness score returned: {financial_score['score']}")
         
         # Add LLM insight
         financial_insight = generate_category_insights(
@@ -250,7 +267,9 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         
         # 4. Score Operational Resilience (with industry-specific documentation standards)
         logger.info("Scoring operational resilience with dynamic benchmarks...")
+        logger.debug("Calling score_operational_resilience")
         operational_score = score_operational_resilience(responses, research_data)
+        logger.debug(f"Operational resilience score returned: {operational_score['score']}")
         
         # Add LLM insight
         operational_insight = generate_category_insights(
@@ -263,7 +282,9 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         
         # 5. Score Growth Value (with industry-specific value drivers)
         logger.info("Scoring growth value with dynamic benchmarks...")
+        logger.debug("Calling score_growth_value")
         growth_score = score_growth_value(responses, research_data)
+        logger.debug(f"Growth value score returned: {growth_score['score']}")
         
         # Add LLM insight
         growth_insight = generate_category_insights(
@@ -273,6 +294,13 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         
         category_scores["growth_value"] = growth_score
         logger.info(f"Growth value: {growth_score['score']}/10")
+        
+        # Add assertion checks after scoring
+        assert len(category_scores) == 5, f"Expected 5 category scores, got {len(category_scores)}"
+        for cat_name, cat_data in category_scores.items():
+            assert 'score' in cat_data, f"Missing score for {cat_name}"
+            assert 1.0 <= cat_data['score'] <= 10.0, f"Score {cat_data['score']} out of range for {cat_name}"
+            logger.debug(f"Category {cat_name} validated: score={cat_data['score']}")
         
         # Calculate overall score (mechanical calculation preserved)
         overall_score, readiness_level = calculate_overall_score(category_scores)

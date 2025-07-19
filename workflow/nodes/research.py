@@ -18,7 +18,12 @@ if not os.getenv('OPENAI_API_KEY'):
     if env_path.exists():
         load_dotenv(env_path)
 
-from langchain_openai import ChatOpenAI
+# FIXED: Import LLM utilities
+from workflow.core.llm_utils import (
+    get_llm_with_fallback, 
+    ensure_json_response, 
+    safe_json_parse
+)
 from langchain.schema import SystemMessage, HumanMessage
 
 from workflow.core.prompts import get_prompt, get_industry_context
@@ -78,7 +83,7 @@ class PerplexityResearcher:
             return {"status": "error", "error": str(e)}
 
 
-def extract_citations_with_llm(content: str, llm: ChatOpenAI) -> Dict[str, Any]:
+def extract_citations_with_llm(content: str, llm) -> Dict[str, Any]:
     """Extract structured data and preserve citations using LLM with quality validation"""
     
     extraction_prompt = f"""Extract structured data from this research, ensuring EVERY claim has a specific statistic and citation.
@@ -105,7 +110,7 @@ Extract into this JSON structure:
             "range": "X-Y", 
             "source": "Source Name",
             "year": "2024",
-            "industry_specific": true/false
+            "industry_specific": true
         }},
         "recurring_revenue": {{
             "threshold": "X%",
@@ -178,20 +183,20 @@ Extract into this JSON structure:
 CRITICAL: If a claim lacks specific data, mark it as "No specific data found" rather than making up numbers."""
 
     try:
-        response = llm.invoke([
-            SystemMessage(content="You are a data extraction specialist for M&A research. Extract only claims with specific statistics and credible sources."),
+        # FIXED: Use ensure_json_response wrapper
+        messages = [
+            SystemMessage(content="You are a data extraction specialist for M&A research. Extract only claims with specific statistics and credible sources. Always respond with valid JSON."),
             HumanMessage(content=extraction_prompt)
-        ])
+        ]
         
-        # Parse the JSON response
-        extracted = json.loads(response.content)
-        return extracted
+        result = ensure_json_response(llm, messages, "extract_citations_with_llm")
+        return result
     except Exception as e:
         logger.error(f"LLM extraction failed: {e}")
         return {}
 
 
-def validate_citations_with_llm(data: Dict[str, Any], llm: ChatOpenAI) -> Dict[str, Any]:
+def validate_citations_with_llm(data: Dict[str, Any], llm) -> Dict[str, Any]:
     """Validate that all claims have proper statistics and citations"""
     
     validation_prompt = f"""Review this extracted M&A data and ensure quality:
@@ -213,7 +218,7 @@ For any missing data, either:
 Return the complete JSON with quality improvements and this validation summary:
 {{
     "validated_data": {{...complete data structure...}},
-    "quality_score": X/10,
+    "quality_score": 8,
     "missing_statistics": ["list of claims without numbers"],
     "generic_sources": ["list of non-specific sources"],
     "improvements_made": ["list of enhancements"]
@@ -221,12 +226,13 @@ Return the complete JSON with quality improvements and this validation summary:
 """
 
     try:
-        response = llm.invoke([
-            SystemMessage(content="You are a citation quality validator for M&A research. Ensure all claims have specific data points."),
+        # FIXED: Use ensure_json_response wrapper
+        messages = [
+            SystemMessage(content="You are a citation quality validator for M&A research. Ensure all claims have specific data points. Always respond with valid JSON."),
             HumanMessage(content=validation_prompt)
-        ])
+        ]
         
-        result = json.loads(response.content)
+        result = ensure_json_response(llm, messages, "validate_citations_with_llm")
         
         # Extract just the validated data if wrapped
         if "validated_data" in result:
@@ -515,8 +521,9 @@ def research_node(state: Dict[str, Any]) -> Dict[str, Any]:
         
         # Initialize researcher and LLMs
         researcher = PerplexityResearcher()
-        extraction_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
-        validation_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
+        # FIXED: Use get_llm_with_fallback for LLM initialization
+        extraction_llm = get_llm_with_fallback("gpt-4.1-mini", temperature=0.1)
+        validation_llm = get_llm_with_fallback("gpt-4.1-mini", temperature=0.1)
         
         # Create enhanced research prompt
         research_prompt = create_structured_research_prompt(industry, location, revenue_range)

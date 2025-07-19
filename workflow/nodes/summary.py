@@ -18,7 +18,12 @@ if not os.getenv('OPENAI_API_KEY'):
     if env_path.exists():
         load_dotenv(env_path)
 
-from langchain_openai import ChatOpenAI
+# FIXED: Import LLM utilities
+from workflow.core.llm_utils import (
+    get_llm_with_fallback, 
+    ensure_json_response, 
+    validate_word_count
+)
 from langchain.schema import SystemMessage, HumanMessage
 
 from workflow.core.prompts import get_locale_terms
@@ -112,7 +117,7 @@ def generate_executive_summary_llm(
     key_insights: List[Dict],
     research_data: Dict[str, Any],
     timeline_urgency: Dict[str, Any],
-    llm: ChatOpenAI
+    llm
 ) -> str:
     """Generate executive summary with timeline awareness and word limits"""
     
@@ -179,19 +184,24 @@ Write a compelling summary that:
 Style: Professional but warm. Use "you/your" throughout. No jargon."""
 
     try:
-        response = llm.invoke([
+        messages = [
             SystemMessage(content="You are an M&A advisor writing personalized executive summaries. Be concise and impactful. Always use 'typically' or 'often' when discussing outcomes. Never make promises."),
             HumanMessage(content=prompt)
-        ])
+        ]
         
-        summary = response.content.strip()
+        response = llm.invoke(messages)
+        summary = response.content.strip() if hasattr(response, 'content') else str(response).strip()
         
-        # Verify word count and adjust if needed
-        word_count = len(summary.split())
-        if word_count < 195 or word_count > 205:
-            logger.warning(f"Executive summary word count {word_count} outside target range 195-205")
+        # FIXED: Validate and adjust word count
+        validated_summary = validate_word_count(
+            text=summary,
+            target_words=200,
+            tolerance=10,
+            llm=llm,
+            prompt=prompt
+        )
         
-        return summary
+        return validated_summary
         
     except Exception as e:
         logger.error(f"LLM executive summary generation failed: {e}")
@@ -213,7 +223,7 @@ def generate_category_summary_llm(
     research_data: Dict[str, Any],
     business_info: Dict[str, Any],
     timeline_urgency: Dict[str, Any],
-    llm: ChatOpenAI
+    llm
 ) -> str:
     """Generate category summary with timeline adaptation and word limits"""
     
@@ -287,19 +297,24 @@ Include: "businesses in {business_info.get('industry')} typically see {value_imp
 Style: Direct and actionable. Use "you/your" throughout."""
 
     try:
-        response = llm.invoke([
+        messages = [
             SystemMessage(content="You are an M&A advisor providing specific, actionable category analysis. Be precise with word counts and always frame outcomes as typical results, not guarantees."),
             HumanMessage(content=prompt)
-        ])
+        ]
         
-        summary = response.content.strip()
+        response = llm.invoke(messages)
+        summary = response.content.strip() if hasattr(response, 'content') else str(response).strip()
         
-        # Verify word count
-        word_count = len(summary.split())
-        if word_count < 145 or word_count > 155:
-            logger.warning(f"Category summary for {category} word count {word_count} outside target range 145-155")
+        # FIXED: Validate and adjust word count
+        validated_summary = validate_word_count(
+            text=summary,
+            target_words=150,
+            tolerance=10,
+            llm=llm,
+            prompt=prompt
+        )
         
-        return summary
+        return validated_summary
         
     except Exception as e:
         logger.error(f"LLM category summary generation failed for {category}: {e}")
@@ -323,7 +338,7 @@ def generate_recommendations_llm(
     exit_timeline: str,
     research_data: Dict[str, Any],
     timeline_urgency: Dict[str, Any],
-    llm: ChatOpenAI
+    llm
 ) -> str:
     """Generate timeline-adapted recommendations with proper outcome framing"""
     
@@ -414,12 +429,13 @@ EXAMPLES OF PROPER FRAMING:
 Remember: Every outcome must be framed as typical/average, not guaranteed."""
 
     try:
-        response = llm.invoke([
+        messages = [
             SystemMessage(content="You are a strategic M&A advisor providing actionable exit readiness recommendations. CRITICAL: Never make promises. Always use 'typically/often/on average' language. Every outcome claim needs a range and citation."),
             HumanMessage(content=prompt)
-        ])
+        ]
         
-        recommendations = response.content.strip()
+        response = llm.invoke(messages)
+        recommendations = response.content.strip() if hasattr(response, 'content') else str(response).strip()
         
         # Verify proper outcome framing
         if "will achieve" in recommendations or "will increase" in recommendations or "guaranteed" in recommendations:
@@ -460,7 +476,7 @@ def generate_industry_context_llm(
     business_info: Dict[str, str],
     scores: Dict[str, Any],
     timeline_urgency: Dict[str, Any],
-    llm: ChatOpenAI
+    llm
 ) -> str:
     """Generate industry context section with timeline relevance and outcome framing"""
     
@@ -523,19 +539,24 @@ Timeline insight to incorporate: {timeline_insight}
 Style: Authoritative but accessible. No jargon. Remember to frame all outcomes as typical market observations."""
 
     try:
-        response = llm.invoke([
+        messages = [
             SystemMessage(content="You are a market analyst providing industry intelligence for M&A. Use specific data and citations. Always frame market data as typical observations using 'typically/often/generally' language."),
             HumanMessage(content=prompt)
-        ])
+        ]
         
-        context = response.content.strip()
+        response = llm.invoke(messages)
+        context = response.content.strip() if hasattr(response, 'content') else str(response).strip()
         
-        # Verify word count
-        word_count = len(context.split())
-        if word_count < 195 or word_count > 205:
-            logger.warning(f"Industry context word count {word_count} outside target range 195-205")
-            
-        return context
+        # FIXED: Validate and adjust word count
+        validated_context = validate_word_count(
+            text=context,
+            target_words=200,
+            tolerance=10,
+            llm=llm,
+            prompt=prompt
+        )
+        
+        return validated_context
         
     except Exception as e:
         logger.error(f"LLM industry context generation failed: {e}")
@@ -557,7 +578,7 @@ def generate_next_steps_llm(
     overall_score: float,
     business_info: Dict[str, str],
     timeline_urgency: Dict[str, Any],
-    llm: ChatOpenAI
+    llm
 ) -> str:
     """Generate timeline-specific next steps with clear actions and outcome framing"""
     
@@ -620,17 +641,21 @@ End with: "For personalized guidance on executing these improvements, contact us
 Style: Action-oriented, specific, and motivating. Use "typically/often" when discussing outcomes."""
 
     try:
-        response = llm.invoke([
+        messages = [
             SystemMessage(content="You are an implementation coach helping business owners take immediate action. Be specific and respect exact word counts. Always frame outcomes as typical results, not guarantees."),
             HumanMessage(content=prompt)
-        ])
+        ]
         
-        next_steps = response.content.strip()
+        response = llm.invoke(messages)
+        next_steps = response.content.strip() if hasattr(response, 'content') else str(response).strip()
         
         # Verify proper outcome framing
         if "will achieve" in next_steps or "will see" in next_steps or "guaranteed" in next_steps:
             logger.warning("Next steps contain promise language that should be revised")
-            
+        
+        # Note: For next steps with multiple sections, we don't validate the total word count
+        # as it's structured in specific 100-word sections
+        
         return next_steps
         
     except Exception as e:
@@ -685,8 +710,8 @@ def summary_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["current_stage"] = "summary"
         state["messages"].append(f"Enhanced summary with timeline adaptation and outcome framing started at {start_time.isoformat()}")
         
-        # Initialize LLM for generation
-        summary_llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.4)
+        # FIXED: Initialize LLM for generation with proper model
+        summary_llm = get_llm_with_fallback("gpt-4.1-mini", temperature=0.4)
         
         # Extract data from previous stages
         scoring_result = state.get("scoring_result", {})
