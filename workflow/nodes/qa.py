@@ -1,7 +1,7 @@
 """
 QA Node - Quality assurance with LLM intelligence, formatting standardization, and outcome framing verification.
 Performs mechanical checks, intelligent analysis, Placid-compatible formatting, and ensures proper outcome language.
-FIXED: Use ensure_json_response for all LLM calls requiring JSON output.
+FIXED: Increase token limits for QA checks analyzing full reports.
 """
 
 import logging
@@ -250,7 +250,7 @@ Be thorough but reasonable - general business advice doesn't need citations, onl
             ))
         ]
         
-        # FIXED: Use ensure_json_response wrapper
+        # FIXED: Use ensure_json_response wrapper with higher token limit
         result = ensure_json_response(llm, messages, "verify_outcome_framing_llm")
         return result
         
@@ -319,7 +319,7 @@ Ensure all fixes sound natural and maintain the persuasive tone while being comp
             ))
         ]
         
-        # FIXED: Use ensure_json_response wrapper
+        # FIXED: Use ensure_json_response wrapper with higher token limit
         result = ensure_json_response(llm, messages, "fix_outcome_framing_llm")
         
         # Only return sections that were actually fixed
@@ -357,24 +357,24 @@ def qa_node(state: WorkflowState) -> WorkflowState:
         scoring_result = state.get("scoring_result", {})
         summary_result = state.get("summary_result", {})
         
-        # FIXED: Initialize QA LLMs with proper model names
+        # FIXED: Initialize QA LLMs with higher token limits for analyzing full reports
         qa_llm = get_llm_with_fallback(
             model="gpt-4.1-nano",  # Fast, efficient for mechanical checks
             temperature=0,
-            max_tokens=4000
+            max_tokens=8000  # INCREASED from 4000 for full report analysis
         )
         
         # GPT-4.1 for redundancy and polish (better understanding of nuance)
         redundancy_llm = get_llm_with_fallback(
             model="gpt-4.1",  # Superior instruction following and comprehension
             temperature=0.1,
-            max_tokens=4000
+            max_tokens=8000  # INCREASED from 4000 for full report analysis
         )
         
         polish_llm = get_llm_with_fallback(
             model="gpt-4.1",  # Best for final polish and impact
             temperature=0.3,
-            max_tokens=4000
+            max_tokens=8000  # INCREASED from 4000
         )
         
         # Track all quality checks
@@ -439,7 +439,7 @@ def qa_node(state: WorkflowState) -> WorkflowState:
         logger.info("Checking for content redundancy with GPT-4.1...")
         redundancy_check = check_redundancy_llm(
             summary_result.get("final_report", ""),
-            redundancy_llm  # Using GPT-4.1
+            redundancy_llm  # Using GPT-4.1 with 8000 tokens
         )
         quality_scores["redundancy_check"] = redundancy_check
         
@@ -454,7 +454,7 @@ def qa_node(state: WorkflowState) -> WorkflowState:
         logger.info("Checking tone consistency...")
         tone_check = check_tone_consistency_llm(
             summary_result.get("final_report", ""),
-            qa_llm  # Using nano for speed
+            qa_llm  # Using nano with 8000 tokens
         )
         quality_scores["tone_consistency"] = tone_check
         
@@ -468,7 +468,7 @@ def qa_node(state: WorkflowState) -> WorkflowState:
         citation_check = verify_citations_llm(
             summary_result.get("final_report", ""),
             research_result,
-            qa_llm
+            qa_llm  # Using nano with 8000 tokens
         )
         quality_scores["citation_verification"] = citation_check
         
@@ -489,7 +489,7 @@ def qa_node(state: WorkflowState) -> WorkflowState:
             summary_result.get("final_report", ""),
             summary_result.get("recommendations", ""),
             summary_result.get("next_steps", ""),
-            qa_llm
+            qa_llm  # Using nano with 8000 tokens
         )
         quality_scores["outcome_framing"] = outcome_framing_check
         
@@ -542,7 +542,7 @@ def qa_node(state: WorkflowState) -> WorkflowState:
                     scoring_result,
                     redundancy_check,
                     tone_check,
-                    qa_llm
+                    qa_llm  # Using nano with 8000 tokens
                 )
                 
                 # Fix outcome framing violations if found
@@ -553,7 +553,7 @@ def qa_node(state: WorkflowState) -> WorkflowState:
                         summary_result.get("recommendations", ""),
                         summary_result.get("next_steps", ""),
                         summary_result.get("executive_summary", ""),
-                        qa_llm
+                        qa_llm  # Using nano with 8000 tokens
                     )
                     
                     # Merge framing fixes into fixed sections
@@ -582,13 +582,13 @@ def qa_node(state: WorkflowState) -> WorkflowState:
                 
                 redundancy_check = check_redundancy_llm(
                     summary_result.get("final_report", ""),
-                    qa_llm
+                    qa_llm  # Using nano with 8000 tokens
                 )
                 quality_scores["redundancy_check"] = redundancy_check
                 
                 tone_check = check_tone_consistency_llm(
                     summary_result.get("final_report", ""),
-                    qa_llm
+                    qa_llm  # Using nano with 8000 tokens
                 )
                 quality_scores["tone_consistency"] = tone_check
                 
@@ -598,7 +598,7 @@ def qa_node(state: WorkflowState) -> WorkflowState:
                                           scoring_result.get("overall_score"),
                                           scoring_result.get("readiness_level")),
                     state.get("research_result", {}),
-                    qa_llm
+                    qa_llm  # Using nano with 8000 tokens
                 )
                 quality_scores["citation_verification"] = citation_check
                 
@@ -609,7 +609,7 @@ def qa_node(state: WorkflowState) -> WorkflowState:
                                           scoring_result.get("readiness_level")),
                     summary_result.get("recommendations", ""),
                     summary_result.get("next_steps", ""),
-                    qa_llm
+                    qa_llm  # Using nano with 8000 tokens
                 )
                 quality_scores["outcome_framing"] = outcome_framing_check
                 
@@ -673,7 +673,7 @@ def qa_node(state: WorkflowState) -> WorkflowState:
             polished_sections = polish_report_llm(
                 summary_result,
                 scoring_result,
-                polish_llm  # Using GPT-4.1 for superior polish
+                polish_llm  # Using GPT-4.1 with 8000 tokens
             )
             
             # Update with polished content
