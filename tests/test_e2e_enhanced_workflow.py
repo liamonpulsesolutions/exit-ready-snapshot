@@ -2,6 +2,7 @@
 """
 End-to-end test for enhanced LangGraph workflow.
 Tests all nodes with LLM intelligence working together.
+Updated with fixes for timeline assertions and LangGraph state structure.
 """
 
 import os
@@ -12,6 +13,7 @@ from datetime import datetime
 from io import StringIO
 from pathlib import Path
 import asyncio
+import re
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -97,21 +99,21 @@ SAMPLE_FORM_DATA = {
     "email": "Respondee@test2.com",
     "industry": "Manufacturing & Production",
     "years_in_business": "5-10 years",
-    "revenue_range": "$10M-$25M",  # Normalized format for scoring
+    "revenue_range": "$10M-$25M",
     "location": "Northeast US",
     "exit_timeline": "1-2 years",
     "age_range": "55-64",
     "responses": {
         "q1": "Quality control final sign-offs for our largest automotive client - they require my personal certification on all batches due to safety requirements.",
-        "q2": "70-80%",
+        "q2": "3-7 days",
         "q3": "Automotive parts manufacturing (60%), Custom fabrication services (30%), Equipment maintenance contracts (10%)",
         "q4": "40-60%",
         "q5": "6",
-        "q6": "$10M-$20M annual revenue",
-        "q7": "Major disruption - production would halt within days",
-        "q8": "Partial documentation exists but scattered across different systems",
-        "q9": "Declining due to supply chain costs and overseas competition",
-        "q10": "Our precision quality standards and 30-year reputation with automotive OEMs"
+        "q6": "Stayed flat",
+        "q7": "Programming and setup of our CNC machines - Tom has 15 years experience but he's the only one who knows the systems.",
+        "q8": "6",
+        "q9": "Our precision quality standards and 30-year reputation with automotive OEMs",
+        "q10": "7"
     }
 }
 
@@ -138,90 +140,18 @@ async def test_e2e_enhanced_workflow():
             print("\n❌ Cannot run test without OpenAI API key")
             return
         
-        # Store PII mapping for test UUID
-        from workflow.core.pii_handler import store_pii_mapping
-        test_pii_mapping = {
-            "[OWNER_NAME]": SAMPLE_FORM_DATA["name"],
-            "[EMAIL]": SAMPLE_FORM_DATA["email"],
-            "[COMPANY_NAME]": "Test Manufacturing Co",
-            "[COMPANY]": "Test Manufacturing Co",
-            "[INDUSTRY]": SAMPLE_FORM_DATA["industry"],
-            "[LOCATION]": SAMPLE_FORM_DATA["location"]
-        }
-        store_pii_mapping(SAMPLE_FORM_DATA["uuid"], test_pii_mapping)
-        print(f"\n📝 Stored test PII mapping for UUID: {SAMPLE_FORM_DATA['uuid']}")
-        print(f"   Mapping entries: {len(test_pii_mapping)}")
-        
-        # Create initial state simulating intake completion
-        initial_state = {
-            "uuid": SAMPLE_FORM_DATA["uuid"],
-            "form_data": SAMPLE_FORM_DATA,
-            "locale": "us",
-            "current_stage": "intake_complete",
-            "error": None,
-            "processing_time": {"intake": 0.5},
-            "messages": ["Simulated intake completion"],
-            # Business context
-            "industry": SAMPLE_FORM_DATA["industry"],
-            "location": SAMPLE_FORM_DATA["location"],
-            "revenue_range": SAMPLE_FORM_DATA["revenue_range"],
-            "exit_timeline": SAMPLE_FORM_DATA["exit_timeline"],
-            "years_in_business": SAMPLE_FORM_DATA["years_in_business"],
-            # Simulated intake result
-            "intake_result": {
-                "validation_status": "success",
-                "pii_mapping": test_pii_mapping,
-                "anonymized": True
-            },
-            # Anonymized data for processing
-            "anonymized_data": {
-                "responses": SAMPLE_FORM_DATA["responses"],
-                "industry": SAMPLE_FORM_DATA["industry"],
-                "revenue_range": SAMPLE_FORM_DATA["revenue_range"],
-                "years_in_business": SAMPLE_FORM_DATA["years_in_business"],
-                "exit_timeline": SAMPLE_FORM_DATA["exit_timeline"],
-                "location": SAMPLE_FORM_DATA["location"]
-            },
-            "pii_mapping": test_pii_mapping
-        }
+        # Import the workflow
+        from workflow.graph import process_assessment_async
         
         print(f"\n🎯 Executing full assessment pipeline...")
         print(f"   UUID: {SAMPLE_FORM_DATA['uuid']}")
         print(f"   Business: {SAMPLE_FORM_DATA['industry']} / {SAMPLE_FORM_DATA['revenue_range']}")
         print(f"   Timeline: {SAMPLE_FORM_DATA['exit_timeline']}")
-        print(f"   Starting from: intake stage (simulated)")
         
         start_time = datetime.now()
         
-        # Create a modified workflow that skips intake since we simulated it
-        from workflow.graph import create_workflow
-        from langgraph.graph import StateGraph, END
-        from workflow.state import WorkflowState
-        from workflow.nodes.research import research_node
-        from workflow.nodes.scoring import scoring_node
-        from workflow.nodes.summary import summary_node
-        from workflow.nodes.qa import qa_node
-        from workflow.nodes.pii_reinsertion import pii_reinsertion_node
-        
-        # Create workflow starting from research (skip intake)
-        workflow = StateGraph(WorkflowState)
-        workflow.add_node("research", research_node)
-        workflow.add_node("scoring", scoring_node)
-        workflow.add_node("summary", summary_node)
-        workflow.add_node("qa", qa_node)
-        workflow.add_node("pii_reinsertion", pii_reinsertion_node)
-        
-        workflow.set_entry_point("research")
-        workflow.add_edge("research", "scoring")
-        workflow.add_edge("scoring", "summary")
-        workflow.add_edge("summary", "qa")
-        workflow.add_edge("qa", "pii_reinsertion")
-        workflow.add_edge("pii_reinsertion", END)
-        
-        app = workflow.compile()
-        
-        # Run the workflow
-        result = await app.ainvoke(initial_state)
+        # Run the complete workflow
+        result = await process_assessment_async(SAMPLE_FORM_DATA)
         
         end_time = datetime.now()
         execution_time = (end_time - start_time).total_seconds()
@@ -231,155 +161,174 @@ async def test_e2e_enhanced_workflow():
         
         print(f"\n⏱️  Total execution time: {execution_time:.2f} seconds")
         
-        # Validate results - CHECK final_output INSTEAD OF result
+        # Validate results
         print("\n🔍 Validating workflow results...")
-        
-        # Extract final_output where all the data is
-        final_output = result.get("final_output", {})
         
         # 1. Check workflow completed
         log_assertion(
             "Workflow completed successfully",
-            result.get("current_stage") == "completed" and not result.get("error"),
-            {"stage": result.get("current_stage"), "error": result.get("error")}
+            result.get("status") == "completed" and not result.get("error"),
+            {"status": result.get("status"), "error": result.get("error")}
         )
         
-        # 2. Check all required fields IN final_output
+        # 2. Check all required fields in the API response format
+        required_fields = [
+            "uuid", "status", "owner_name", "email", "industry", 
+            "location", "locale", "scores", "executive_summary",
+            "category_summaries", "recommendations", "next_steps"
+        ]
+        
+        for field in required_fields:
+            log_assertion(
+                f"Result contains {field}",
+                field in result and result[field] is not None,
+                {field: result.get(field) is not None}
+            )
+        
+        # 3. Check scores structure
+        scores = result.get("scores", {})
+        score_categories = [
+            "overall", "owner_dependence", "revenue_quality",
+            "financial_readiness", "operational_resilience", "growth_value"
+        ]
+        
+        for category in score_categories:
+            log_assertion(
+                f"Scores contain {category}",
+                category in scores,
+                {"has_score": category in scores, "value": scores.get(category)}
+            )
+        
+        # Check score ranges
+        for category, score in scores.items():
+            log_assertion(
+                f"{category} score is valid",
+                isinstance(score, (int, float)) and 1 <= score <= 10,
+                {"score": score}
+            )
+        
+        # 4. Check processing metadata
+        metadata = result.get("metadata", {})
         log_assertion(
-            "Result contains uuid",
-            result.get("uuid") is not None,
-            {"has_field": result.get("uuid") is not None}
+            "Metadata contains stages completed",
+            "stages_completed" in metadata,
+            {"stages": metadata.get("stages_completed", [])}
         )
         
+        # 5. Check LLM-generated content quality
+        exec_summary = result.get("executive_summary", "")
         log_assertion(
-            "Result contains status",
-            final_output.get("status") == "completed",
-            {"status": final_output.get("status")}
+            "Executive summary is substantial (>200 chars)",
+            len(exec_summary) > 200,
+            {"length": len(exec_summary)}
         )
         
+        # 6. Check category summaries structure
+        category_summaries = result.get("category_summaries", {})
         log_assertion(
-            "Result contains locale", 
-            result.get("locale") is not None,
-            {"locale": result.get("locale")}
+            "Category summaries is a dictionary",
+            isinstance(category_summaries, dict),
+            {"type": type(category_summaries).__name__}
         )
         
-        # Check personalization fields in final_output
-        log_assertion(
-            "Result contains owner_name",
-            final_output.get("owner_name") is not None,
-            {"owner_name": final_output.get("owner_name")}
-        )
-        
-        log_assertion(
-            "Result contains email",
-            final_output.get("email") is not None,
-            {"email": final_output.get("email")}
-        )
-        
-        # 3. Check scores in final_output
-        scores = final_output.get("scores", {})
-        overall_score = scores.get("overall")
-        
-        log_assertion(
-            "Result contains scores",
-            bool(scores),
-            {"has_scores": bool(scores)}
-        )
-        
-        log_assertion(
-            "Result contains executive_summary",
-            bool(final_output.get("executive_summary")),
-            {"has_summary": bool(final_output.get("executive_summary"))}
-        )
-        
-        log_assertion(
-            "Result contains next_steps",
-            bool(final_output.get("next_steps")),
-            {"has_next_steps": bool(final_output.get("next_steps"))}
-        )
-        
-        log_assertion(
-            "Result contains processing_time",
-            bool(result.get("processing_time")),
-            {"has_timing": bool(result.get("processing_time"))}
-        )
-        
-        log_assertion(
-            "Overall score is numeric",
-            isinstance(overall_score, (int, float)) and 0 <= overall_score <= 10,
-            {"score": overall_score}
-        )
-        
-        # 4. Check stage execution times
-        processing_times = result.get("processing_time", {})
-        stages = ["intake", "research", "scoring", "summary", "qa", "pii_reinsertion"]
-        
-        for stage in stages:
-            if stage != "intake":  # We simulated intake
+        if isinstance(category_summaries, dict):
+            for category in ["owner_dependence", "revenue_quality", "financial_readiness", 
+                           "operational_resilience", "growth_value"]:
                 log_assertion(
-                    f"{stage} stage executed",
-                    stage in processing_times and processing_times[stage] > 0,
-                    {"time": processing_times.get(stage)}
+                    f"Category summary exists for {category}",
+                    category in category_summaries,
+                    {"has_summary": category in category_summaries}
                 )
         
-        # For intake, we manually added it
+        # 7. Check recommendations structure
+        recommendations = result.get("recommendations", {})
+        if isinstance(recommendations, dict):
+            log_assertion(
+                "Recommendations contain quick_wins",
+                "quick_wins" in recommendations,
+                {"has_quick_wins": "quick_wins" in recommendations}
+            )
+            log_assertion(
+                "Recommendations contain strategic_priorities",
+                "strategic_priorities" in recommendations,
+                {"has_strategic": "strategic_priorities" in recommendations}
+            )
+        
+        # 8. Check timeline in next steps (FIXED: Use regex pattern)
+        next_steps = result.get("next_steps", "")
+        
+        # Accept various timeline formats
+        timeline_patterns = [
+            r"1-2 years?",
+            r"12-24 months?",
+            r"one to two years?",
+            r"18-24 months?",
+            r"next 1-2 years?"
+        ]
+        
+        timeline_found = any(re.search(pattern, next_steps, re.IGNORECASE) for pattern in timeline_patterns)
+        
         log_assertion(
-            "intake stage executed",
-            "intake" in processing_times,
-            {"time": processing_times.get("intake")}
+            "Next steps contain timeline reference",
+            timeline_found,
+            {"timeline_found": timeline_found, "next_steps_preview": next_steps[:200] + "..."}
         )
         
-        # 5. Check all stages completed
-        expected_stages = ["intake", "research", "scoring", "summary", "pii_reinsertion"]
-        completed_stages = list(processing_times.keys())
+        # 9. Check outcome framing (should use "typically/often" language)
+        outcome_framing_words = ["typically", "often", "generally", "on average", "businesses like yours"]
+        framing_count = sum(1 for word in outcome_framing_words if word in exec_summary.lower())
         
         log_assertion(
-            "All stages completed",
-            all(stage in completed_stages for stage in expected_stages),
-            {"stages": completed_stages}
+            "Executive summary uses proper outcome framing",
+            framing_count >= 2,
+            {"framing_words_found": framing_count}
         )
         
-        # 6. Check LLM-generated content quality
-        exec_summary = final_output.get("executive_summary", "")
+        # Check recommendations for outcome framing
+        if isinstance(recommendations, str):
+            rec_framing_count = sum(1 for word in outcome_framing_words if word in recommendations.lower())
+        else:
+            rec_text = str(recommendations)
+            rec_framing_count = sum(1 for word in outcome_framing_words if word in rec_text.lower())
+        
         log_assertion(
-            "Executive summary is LLM-generated (>200 chars)",
-            len(exec_summary) > 200,
-            {"length": len(exec_summary), "preview": exec_summary[:200] + "..."}
+            "Recommendations use proper outcome framing",
+            rec_framing_count >= 1,
+            {"framing_words_found": rec_framing_count}
         )
         
-        # 7. Check personalization
-        next_steps = final_output.get("next_steps", "")
-        log_assertion(
-            "Next steps are personalized (contains timeline)",
-            any(timeline in next_steps for timeline in ["1-2 years", "timeline", "18-24 months"]),
-            {"contains_timeline": any(t in next_steps for t in ["1-2 years", "timeline", "18-24 months"])}
-        )
-        
-        # 8. Check execution time
+        # 10. Check execution time is reasonable
         log_assertion(
             "Total execution under 3 minutes",
             execution_time < 180,
             {"time": execution_time}
         )
         
+        # 11. Check for any promise language (should not exist)
+        promise_words = ["will increase", "will achieve", "guaranteed", "ensure your", "definitely"]
+        promises_found = [word for word in promise_words if word in str(result).lower()]
+        
+        log_assertion(
+            "No promise language found",
+            len(promises_found) == 0,
+            {"promises_found": promises_found}
+        )
+        
         # Display key results
         print(f"\n📊 Assessment Results:")
-        print(f"   Overall Score: {overall_score}/10")
-        print(f"   Readiness Level: {final_output.get('scores', {}).get('readiness_level', 'Unknown')}")
+        print(f"   Overall Score: {scores.get('overall', 'N/A')}/10")
+        print(f"   Owner Name: {result.get('owner_name', 'N/A')}")
+        print(f"   Email: {result.get('email', 'N/A')}")
+        print(f"   Industry: {result.get('industry', 'N/A')}")
         print(f"   Total Processing Time: {execution_time:.1f}s")
         
-        print(f"\n   Stage Breakdown:")
-        for stage, time in processing_times.items():
-            print(f"   - {stage}: {time:.1f}s")
+        if metadata.get("stage_timings"):
+            print(f"\n   Stage Breakdown:")
+            for stage, time in metadata["stage_timings"].items():
+                print(f"   - {stage}: {time:.1f}s")
         
         print(f"\n   Executive Summary Preview:")
         print(f"   {exec_summary[:200]}...")
-        
-        # 8. Check for warnings or errors
-        if result.get("warnings"):
-            print(f"\n⚠️  Warnings: {len(result.get('warnings', []))}")
-            for warning in result.get("warnings", [])[:3]:
-                print(f"   - {warning}")
         
         # Summary
         print("\n📈 Test Summary:")
@@ -391,9 +340,16 @@ async def test_e2e_enhanced_workflow():
         print(f"   Failed: {total_assertions - passed_assertions}")
         
         if passed_assertions == total_assertions:
-            print("\n✨ All end-to-end tests passed! Enhanced workflow is ready! 🎉")
+            print("\n✨ All end-to-end tests passed! LangGraph workflow is ready! 🎉")
         else:
             print("\n⚠️  Some tests failed. Review the details above.")
+            # Print failed assertions
+            print("\nFailed assertions:")
+            for assertion in _test_data["assertions"]:
+                if not assertion["passed"]:
+                    print(f"   - {assertion['description']}")
+                    if assertion.get("details"):
+                        print(f"     Details: {assertion['details']}")
         
         log_result("test_summary", {
             "total_assertions": total_assertions,
@@ -401,7 +357,7 @@ async def test_e2e_enhanced_workflow():
             "failed": total_assertions - passed_assertions,
             "success_rate": (passed_assertions/total_assertions)*100 if total_assertions > 0 else 0,
             "execution_time": execution_time,
-            "overall_score": overall_score
+            "overall_score": scores.get("overall", "N/A")
         })
         
     except Exception as e:

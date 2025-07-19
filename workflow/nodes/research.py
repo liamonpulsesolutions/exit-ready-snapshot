@@ -1,6 +1,7 @@
 """
 Research node for LangGraph workflow.
 Enhanced with structured prompts, citation extraction, and quality validation.
+Fixed to ensure research_result is properly structured as a dict.
 """
 
 import logging
@@ -486,6 +487,7 @@ def get_fallback_data_with_citations() -> Dict[str, Any]:
 def research_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Enhanced research node with structured prompts and citation extraction.
+    Fixed to ensure research_result is always a proper dict structure.
     
     This node:
     1. Uses structured prompt requiring specific statistics
@@ -581,12 +583,40 @@ def research_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 **validated_data
             }
         
+        # CRITICAL FIX: Ensure all required keys exist in research_data
+        # This prevents downstream nodes from getting string values when expecting dicts
+        required_structures = {
+            "valuation_benchmarks": {},
+            "improvement_strategies": {},
+            "market_conditions": {
+                "buyer_priorities": [],
+                "average_sale_time": {},
+                "key_trend": {}
+            },
+            "industry_specific_thresholds": {},
+            "citations": []
+        }
+        
+        # Merge required structures with research_data, preserving existing data
+        for key, default_value in required_structures.items():
+            if key not in research_data:
+                research_data[key] = default_value
+            elif isinstance(default_value, dict) and isinstance(research_data.get(key), dict):
+                # For nested dicts, ensure sub-keys exist
+                for sub_key, sub_default in default_value.items():
+                    if sub_key not in research_data[key]:
+                        research_data[key][sub_key] = sub_default
+        
         # Add industry-specific context
         research_data["industry_context"] = get_industry_context(industry)
         research_data["timestamp"] = datetime.now().isoformat()
         
-        # Update state
+        # CRITICAL: Ensure research_result is stored as a complete dict
         state["research_result"] = research_data
+        
+        # Log the structure to verify it's correct
+        logger.debug(f"Research result structure: {list(research_data.keys())}")
+        logger.debug(f"Market conditions type: {type(research_data.get('market_conditions'))}")
         
         # Add processing time
         end_time = datetime.now()
@@ -608,9 +638,17 @@ def research_node(state: Dict[str, Any]) -> Dict[str, Any]:
         
     except Exception as e:
         logger.error(f"Error in enhanced research node: {str(e)}", exc_info=True)
+        
+        # CRITICAL: Even on error, provide a valid research_result structure
+        fallback_data = get_fallback_data_with_citations()
+        fallback_data["error"] = str(e)
+        fallback_data["data_source"] = "error_fallback"
+        
+        state["research_result"] = fallback_data
         state["error"] = f"Research failed: {str(e)}"
         state["messages"].append(f"ERROR in research: {str(e)}")
         state["current_stage"] = "research_error"
+        
         return state
 
 
