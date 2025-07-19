@@ -2,6 +2,7 @@
 Summary node for LangGraph workflow.
 Enhanced with LLM generation, timeline adaptation, word limits, and outcome framing rules.
 Creates personalized, intelligent report sections with proper outcome language.
+FIXED: Handle missing data gracefully.
 """
 
 import logging
@@ -121,10 +122,27 @@ def generate_executive_summary_llm(
 ) -> str:
     """Generate executive summary with timeline awareness and word limits"""
     
-    # Find highest and lowest scoring categories
+    # FIXED: Handle empty category_scores gracefully
+    if not category_scores:
+        logger.warning("No category scores available for executive summary")
+        return f"""Thank you for completing the Exit Ready Snapshot. Your assessment is being processed.
+
+Given your {business_info.get('exit_timeline', 'timeline')}, we're analyzing your business readiness. 
+
+Based on your {business_info.get('industry', 'industry')} business in {business_info.get('location', 'your location')}, we'll provide specific recommendations to maximize your exit value.
+
+Please note that businesses in your industry typically see significant value improvements when implementing targeted exit readiness strategies."""
+    
+    # FIXED: Safely find highest and lowest scoring categories with null checks
     sorted_scores = sorted(category_scores.items(), key=lambda x: x[1].get('score', 0))
-    lowest = sorted_scores[0] if sorted_scores else None
-    highest = sorted_scores[-1] if sorted_scores else None
+    
+    if sorted_scores:
+        lowest = sorted_scores[0]
+        highest = sorted_scores[-1]
+    else:
+        # Provide defaults if no scores
+        lowest = ('improvement_needed', {'score': 5.0, 'insight': 'Areas for improvement identified'})
+        highest = ('strengths', {'score': 7.0, 'insight': 'Building on existing strengths'})
     
     # Get specific benchmarks from research
     valuation_data = research_data.get('valuation_benchmarks', {})
@@ -686,6 +704,7 @@ For personalized guidance on executing these improvements, contact us at success
 def summary_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Enhanced summary node with timeline adaptation, word limits, and outcome framing rules.
+    FIXED: Handle missing data gracefully.
     
     This node:
     1. Detects exit timeline urgency
@@ -723,11 +742,11 @@ def summary_node(state: Dict[str, Any]) -> Dict[str, Any]:
         
         # Business info
         business_info = {
-            "industry": state.get("industry", "Not specified"),
-            "location": state.get("location", "Not specified"),
-            "revenue_range": state.get("revenue_range", "Not specified"),
-            "exit_timeline": state.get("exit_timeline", "Not specified"),
-            "years_in_business": state.get("years_in_business", "Not specified")
+            "industry": anonymized_data.get("industry") or state.get("industry") or "Not specified",
+            "location": anonymized_data.get("location") or state.get("location") or "Not specified",
+            "revenue_range": anonymized_data.get("revenue_range") or state.get("revenue_range") or "Not specified",
+            "exit_timeline": anonymized_data.get("exit_timeline") or state.get("exit_timeline") or "Not specified",
+            "years_in_business": anonymized_data.get("years_in_business") or state.get("years_in_business") or "Not specified"
         }
         
         # DETERMINE TIMELINE URGENCY

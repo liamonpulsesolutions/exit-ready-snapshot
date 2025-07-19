@@ -2,6 +2,7 @@
 Scoring node for LangGraph workflow.
 Enhanced with LLM interpretation for each category.
 Uses pure functions from core modules plus intelligent analysis.
+FIXED: Industry extraction and response counting.
 """
 
 import logging
@@ -163,6 +164,7 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Enhanced scoring node with LLM interpretation for each category.
     Now uses dynamic industry benchmarking from research data.
+    FIXED: Industry extraction and response counting.
     
     This node:
     1. Uses mechanical scoring with industry-specific benchmarks
@@ -191,16 +193,34 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         anonymized_data = state.get("anonymized_data", {})
         research_result = state.get("research_result", {})
         
-        # Extract responses and business info
-        responses = anonymized_data.get("responses", {})
+        # FIXED: Extract only the actual question responses (q1-q10)
+        question_responses = {}
+        all_responses = anonymized_data.get("responses", {})
+        for key, value in all_responses.items():
+            if key.startswith('q') and key[1:].isdigit():
+                question_responses[key] = value
         
-        # Add business context to responses for scoring functions
-        responses["industry"] = state.get("industry", "Professional Services")
-        responses["revenue_range"] = state.get("revenue_range", "$1M-$5M")
-        responses["years_in_business"] = state.get("years_in_business", "5-10 years")
-        responses["exit_timeline"] = state.get("exit_timeline", "1-2 years")
+        # FIXED: Get business context from state, not from responses
+        # The industry should come from the anonymized_data or state, not responses
+        industry = anonymized_data.get("industry") or state.get("industry") or "Professional Services"
+        revenue_range = anonymized_data.get("revenue_range") or state.get("revenue_range") or "$1M-$5M"
+        years_in_business = anonymized_data.get("years_in_business") or state.get("years_in_business") or "5-10 years"
+        exit_timeline = anonymized_data.get("exit_timeline") or state.get("exit_timeline") or "1-2 years"
         
-        logger.info(f"Scoring {len(responses)} responses for {responses['industry']}")
+        # Create responses dict with question responses plus business context
+        responses = question_responses.copy()
+        responses["industry"] = industry
+        responses["revenue_range"] = revenue_range
+        responses["years_in_business"] = years_in_business
+        responses["exit_timeline"] = exit_timeline
+        
+        logger.info(f"Scoring {len(question_responses)} question responses for {industry}")
+        logger.info(f"Business context - Industry: {industry}, Revenue: {revenue_range}")
+        
+        # Ensure research_data is properly structured
+        if not isinstance(research_result, dict):
+            logger.error(f"research_result is not a dict: {type(research_result)}")
+            research_result = {}
         
         # Extract research data - ensure it has the right structure
         research_data = {
@@ -213,7 +233,6 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         }
         
         # Log extracted benchmarks for debugging
-        industry = responses.get("industry", "Professional Services")
         benchmarks = extract_industry_benchmarks(research_data, industry)
         logger.info(f"Extracted benchmarks for {industry}: {benchmarks}")
         
@@ -356,7 +375,8 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "research_quality": research_result.get("citation_quality", {}).get("source", "unknown"),
                 "has_llm_insights": True,
                 "has_dynamic_benchmarks": True,
-                "industry": industry
+                "industry": industry,
+                "question_responses_count": len(question_responses)
             }
         }
         
