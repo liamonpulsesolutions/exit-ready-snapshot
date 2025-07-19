@@ -1,152 +1,142 @@
 """
-LLM utility functions for the Exit Ready Snapshot workflow.
-Provides centralized functions for JSON parsing, word counting, and LLM management.
-FIXED: Model name extraction and JSON response format handling.
+LLM utility functions for the Exit Ready workflow.
+Provides standardized LLM access with fallback handling.
+FIXED: JSON response handling using bind() method and added gpt-4.1 full model.
 """
 
-import json
+import os
 import re
+import json
 import logging
-from typing import Dict, Any, List, Optional, Union, Tuple
+from datetime import datetime
+from typing import Dict, Any, Optional, List, Union, Tuple
+from pathlib import Path
+
+# LangChain imports
 from langchain_openai import ChatOpenAI
 from langchain.schema import BaseMessage, SystemMessage, HumanMessage
-import time
+
+# Load environment if not already loaded
+from dotenv import load_dotenv
+if not os.getenv('OPENAI_API_KEY'):
+    env_path = Path(__file__).parent.parent.parent / '.env'
+    if env_path.exists():
+        load_dotenv(env_path)
 
 logger = logging.getLogger(__name__)
 
+# Model configurations with GPT-4.1 (April 2025)
+MODEL_CONFIGS = {
+    "gpt-4.1": {
+        "model": "gpt-4.1",
+        "max_tokens": 8000,
+        "description": "Full GPT-4.1 - best reasoning and comprehension"
+    },
+    "gpt-4.1-mini": {
+        "model": "gpt-4.1-mini",
+        "max_tokens": 4000,
+        "description": "Enhanced reasoning and coding, cost-effective"
+    },
+    "gpt-4.1-nano": {
+        "model": "gpt-4.1-nano",
+        "max_tokens": 2000,
+        "description": "Fast, efficient for simple tasks"
+    }
+}
+
+# Default model for fallback
+DEFAULT_MODEL = "gpt-4.1-mini"
+
 
 def get_llm_with_fallback(
-    model: str = "gpt-4.1-mini",
-    temperature: float = 0.1,
-    max_tokens: int = 4000,
+    model_name: str = DEFAULT_MODEL,
+    temperature: float = 0.3,
     **kwargs
 ) -> ChatOpenAI:
     """
-    Create an LLM instance with proper model names and JSON response format support.
-    FIXED: Store model name as custom attribute for later retrieval.
+    Get an LLM instance with fallback to default model if specified model fails.
+    FIXED: Store model name as custom attribute for reliable extraction.
     
     Args:
-        model: Model name (will be corrected if using old names)
+        model_name: Name of the model to use
         temperature: Temperature for sampling
-        max_tokens: Maximum tokens in response
-        **kwargs: Additional parameters for ChatOpenAI
+        **kwargs: Additional arguments for ChatOpenAI
         
     Returns:
-        Configured ChatOpenAI instance
+        ChatOpenAI instance
     """
-    # Model name mapping (fix incorrect references)
-    model_mapping = {
-        "gpt-4o-mini": "gpt-4.1-mini",
-        "gpt-4o": "gpt-4.1",
-        "gpt-4.5": "gpt-4.1",
-        "gpt-4-turbo": "gpt-4.1",
-        "gpt-3.5-turbo": "gpt-4.1-nano"
-    }
+    # Validate model name
+    if model_name not in MODEL_CONFIGS:
+        logger.warning(f"Unknown model '{model_name}', using default '{DEFAULT_MODEL}'")
+        model_name = DEFAULT_MODEL
     
-    # Correct the model name if needed
-    corrected_model = model_mapping.get(model, model)
-    if corrected_model != model:
-        logger.info(f"Corrected model name from {model} to {corrected_model}")
-    
-    # Create LLM WITHOUT response format - let individual calls decide
-    llm_kwargs = {
-        "model": corrected_model,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        **kwargs
-    }
-    
-    # REMOVED: automatic JSON response format
-    # This was causing issues for non-JSON requests
+    config = MODEL_CONFIGS[model_name]
     
     try:
-        llm = ChatOpenAI(**llm_kwargs)
-        
-        # FIXED: Store the model name as a custom attribute
-        llm._custom_model_name = corrected_model
-        
-        logger.debug(f"Created LLM: {corrected_model} (temp={temperature})")
-        return llm
-    except Exception as e:
-        logger.error(f"Failed to create LLM with model {corrected_model}: {e}")
-        # Fallback to a known good model
-        logger.info("Falling back to gpt-4.1-mini")
-        fallback_llm = ChatOpenAI(
-            model="gpt-4.1-mini",
+        # Create LLM instance
+        llm = ChatOpenAI(
+            model=config["model"],
             temperature=temperature,
-            max_tokens=max_tokens
+            max_tokens=config.get("max_tokens", 4000),
+            **kwargs
         )
-        # Store model name on fallback too
-        fallback_llm._custom_model_name = "gpt-4.1-mini"
-        return fallback_llm
+        
+        # FIXED: Store the model name as a custom attribute for reliable access
+        llm._custom_model_name = config["model"]
+        
+        logger.debug(f"Created LLM: {model_name} (temp={temperature})")
+        return llm
+        
+    except Exception as e:
+        logger.error(f"Failed to create LLM '{model_name}': {e}")
+        if model_name != DEFAULT_MODEL:
+            logger.info(f"Falling back to default model '{DEFAULT_MODEL}'")
+            return get_llm_with_fallback(DEFAULT_MODEL, temperature, **kwargs)
+        else:
+            raise
 
 
 def extract_json_from_text(text: str) -> Optional[str]:
     """
-    Extract JSON from text that might have other content around it.
+    Extract JSON object from text that may contain non-JSON content.
     
     Args:
-        text: Text that might contain JSON
+        text: Text potentially containing JSON
         
     Returns:
         Extracted JSON string or None
     """
+    if not text:
+        return None
+    
     # Try to find JSON-like content
-    # Look for content between { and } or [ and ]
-    json_patterns = [
-        r'\{[^{}]*\{[^{}]*\}[^{}]*\}',  # Nested objects
-        r'\{[^{}]+\}',  # Simple objects
-        r'\[[^\[\]]*\[[^\[\]]*\][^\[\]]*\]',  # Nested arrays
-        r'\[[^\[\]]+\]'  # Simple arrays
+    patterns = [
+        r'\{[^{}]*\}',  # Simple object
+        r'\{(?:[^{}]|\{[^{}]*\})*\}',  # Nested object (one level)
+        r'\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}'  # Nested object (two levels)
     ]
     
-    for pattern in json_patterns:
+    for pattern in patterns:
         matches = re.findall(pattern, text, re.DOTALL)
-        for match in matches:
+        for match in reversed(matches):  # Try from the end first
             try:
-                # Validate it's actual JSON
+                # Validate it's proper JSON
                 json.loads(match)
                 return match
-            except json.JSONDecodeError:
-                continue
-    
-    # Try to find content after common prefixes
-    prefixes = [
-        "```json",
-        "Here is the JSON:",
-        "JSON output:",
-        "Response:"
-    ]
-    
-    for prefix in prefixes:
-        if prefix in text:
-            start = text.find(prefix) + len(prefix)
-            # Find the end of JSON (could be ```, end of text, or double newline)
-            end_markers = ["```", "\n\n", "\n---"]
-            end = len(text)
-            for marker in end_markers:
-                marker_pos = text.find(marker, start)
-                if marker_pos != -1:
-                    end = min(end, marker_pos)
-            
-            potential_json = text[start:end].strip()
-            try:
-                json.loads(potential_json)
-                return potential_json
-            except json.JSONDecodeError:
+            except:
                 continue
     
     return None
 
 
-def safe_json_parse(
-    input_str: Union[str, Dict, Any],
-    default_value: Optional[Dict] = None,
+def parse_json_response(
+    input_str: Union[str, Dict[str, Any]],
+    default_value: Optional[Dict[str, Any]] = None,
     source_name: str = "Unknown",
     max_retries: int = 3
 ) -> Dict[str, Any]:
     """
-    Safely parse JSON with retry logic and detailed error logging.
+    Safely parse JSON response with multiple fallback strategies.
     
     Args:
         input_str: String to parse or dict to return
@@ -213,6 +203,10 @@ def safe_json_parse(
     return default_value
 
 
+# Alias for backward compatibility
+safe_json_parse = parse_json_response
+
+
 def ensure_json_response(
     llm: ChatOpenAI,
     messages: List[BaseMessage],
@@ -222,7 +216,7 @@ def ensure_json_response(
 ) -> Dict[str, Any]:
     """
     Wrapper for LLM calls that ensures JSON output with retry logic.
-    FIXED: Properly extract model name and handle JSON response format.
+    FIXED: Use bind() method for JSON response format instead of creating new LLM.
     
     Args:
         llm: The LLM instance to use
@@ -246,68 +240,27 @@ def ensure_json_response(
         try:
             logger.debug(f"{function_name}: LLM call attempt {attempt + 1}/{retry_count}")
             
-            # FIXED: Extract model name with multiple fallback options
-            model_name = None
-            
-            # Try custom attribute first (from our get_llm_with_fallback)
-            if hasattr(llm, '_custom_model_name'):
-                model_name = llm._custom_model_name
-            # Try standard attributes
-            elif hasattr(llm, 'model_name'):
-                model_name = llm.model_name
-            elif hasattr(llm, 'model'):
-                model_name = llm.model
-            # Try private attributes as last resort
-            elif hasattr(llm, '_model_name'):
-                model_name = llm._model_name
-            elif hasattr(llm, '_llm_type'):
-                model_name = llm._llm_type
-            
-            # If we still don't have a model name, try to extract from string representation
-            if not model_name:
-                llm_str = str(llm)
-                # Look for patterns like "model='gpt-4.1-mini'"
-                model_match = re.search(r"model=['\"]([^'\"]+)['\"]", llm_str)
-                if model_match:
-                    model_name = model_match.group(1)
-                else:
-                    # Final fallback
-                    model_name = "gpt-4.1-mini"
-                    logger.warning(f"{function_name}: Could not determine model name, using default: {model_name}")
-            
+            # Get model name for logging
+            model_name = getattr(llm, '_custom_model_name', 'unknown')
             logger.debug(f"{function_name}: Using model: {model_name}")
             
-            # FIXED: Instead of creating a new LLM, use invoke with model_kwargs
-            start_time = time.time()
+            # FIXED: Use bind() to add JSON response format
+            json_llm = llm.bind(response_format={"type": "json_object"})
             
-            # Try to invoke with JSON response format
-            try:
-                # First try: Use model_kwargs in invoke
-                response = llm.invoke(
-                    messages,
-                    config={
-                        "model_kwargs": {
-                            "response_format": {"type": "json_object"}
-                        }
-                    }
-                )
-            except Exception as e:
-                # Fallback: Create new LLM instance with JSON format
-                logger.debug(f"{function_name}: Direct invoke with JSON format failed, creating new instance")
-                json_llm = ChatOpenAI(
-                    model=model_name,
-                    temperature=getattr(llm, 'temperature', 0.1),
-                    max_tokens=getattr(llm, 'max_tokens', 4000),
-                    model_kwargs={"response_format": {"type": "json_object"}}
-                )
-                response = json_llm.invoke(messages)
+            # Make the call
+            start_time = datetime.now()
+            response = json_llm.invoke(messages)
+            elapsed = (datetime.now() - start_time).total_seconds()
             
-            elapsed = time.time() - start_time
             logger.debug(f"{function_name}: LLM call took {elapsed:.2f}s")
             
-            # Log warning if call was suspiciously fast (likely initialization failure)
+            # Check if response is too fast (likely initialization failure)
             if elapsed < 0.1:
-                logger.warning(f"{function_name}: LLM call completed in {elapsed:.3f}s - possible initialization failure")
+                logger.warning(f"{function_name}: LLM call completed in {elapsed:.3f}s - likely initialization failure")
+                # Try using the original LLM without JSON binding
+                response = llm.invoke(messages)
+                elapsed = (datetime.now() - start_time).total_seconds()
+                logger.debug(f"{function_name}: Retry without JSON binding took {elapsed:.2f}s")
             
             # Extract content
             if hasattr(response, 'content'):
@@ -317,26 +270,24 @@ def ensure_json_response(
             
             logger.debug(f"{function_name}: Raw response length: {len(content)}")
             
-            # Parse the response
-            result = safe_json_parse(content, source_name=function_name)
+            # Parse JSON
+            result = parse_json_response(
+                content,
+                source_name=function_name,
+                default_value={}
+            )
             
             # Validate required keys if specified
             if require_keys:
-                missing_keys = [key for key in require_keys if key not in result]
+                missing_keys = [k for k in require_keys if k not in result]
                 if missing_keys:
                     logger.warning(f"{function_name}: Response missing required keys: {missing_keys}")
                     if attempt < retry_count - 1:
-                        # Add a message to request the missing keys
-                        messages.append(HumanMessage(
-                            content=f"Your response is missing these required keys: {missing_keys}. "
-                                   f"Please provide a complete JSON response with all required fields."
-                        ))
+                        # Add missing keys to prompt for retry
+                        messages[-1].content += f"\n\nYour response is missing these required keys: {missing_keys}"
                         continue
-                    else:
-                        # On last attempt, add default values for missing keys
-                        for key in missing_keys:
-                            result[key] = None
             
+            # Success!
             logger.info(f"{function_name}: Successfully parsed JSON response on attempt {attempt + 1}")
             return result
             
@@ -344,136 +295,63 @@ def ensure_json_response(
             last_error = e
             logger.error(f"{function_name}: Attempt {attempt + 1} failed: {e}")
             
-            if attempt < retry_count - 1:
-                # Add a message to help the model understand what went wrong
-                error_msg = (
-                    f"Your previous response could not be parsed as JSON. Error: {str(e)}. "
-                    f"Please respond with valid JSON only, no markdown formatting or extra text."
-                )
-                messages.append(HumanMessage(content=error_msg))
-                # Small delay before retry
-                time.sleep(1)
+            # On failure, try without JSON binding as fallback
+            if attempt == retry_count - 1:
+                try:
+                    logger.info(f"{function_name}: Final attempt without JSON binding")
+                    response = llm.invoke(messages)
+                    
+                    if hasattr(response, 'content'):
+                        content = response.content
+                    else:
+                        content = str(response)
+                    
+                    result = parse_json_response(
+                        content,
+                        source_name=function_name,
+                        default_value={}
+                    )
+                    
+                    if result:
+                        logger.info(f"{function_name}: Successfully parsed response without JSON binding")
+                        return result
+                        
+                except Exception as fallback_error:
+                    logger.error(f"{function_name}: Fallback attempt failed: {fallback_error}")
     
-    # All retries failed
+    # All attempts failed
     logger.error(f"{function_name}: All {retry_count} attempts failed. Last error: {last_error}")
-    return {} if require_keys is None else {key: None for key in require_keys}
-
-
-def count_words(text: str) -> int:
-    """
-    Accurately count words in text.
     
-    Args:
-        text: Text to count words in
-        
-    Returns:
-        Number of words
-    """
-    # Remove extra whitespace and split
-    words = text.strip().split()
-    # Filter out empty strings
-    words = [w for w in words if w]
-    return len(words)
+    # Return a default structure based on require_keys if available
+    if require_keys:
+        default_response = {key: None for key in require_keys}
+        logger.info(f"{function_name}: Returning default response with required keys")
+        return default_response
+    
+    return {}
 
 
-def validate_word_count(
-    text: str,
-    target_words: int,
-    tolerance: int = 10,
-    llm: Optional[ChatOpenAI] = None,
-    prompt: Optional[str] = None,
-    max_retries: int = 3
+def format_json_prompt(
+    prompt: str,
+    json_example: Dict[str, Any]
 ) -> str:
     """
-    Validate word count and retry with LLM if outside tolerance.
+    Format a prompt to include a JSON example.
     
     Args:
-        text: Text to validate
-        target_words: Target word count
-        tolerance: Acceptable deviation from target
-        llm: LLM instance for regeneration (optional)
-        prompt: Original prompt for regeneration (optional)
-        max_retries: Maximum regeneration attempts
+        prompt: The base prompt
+        json_example: Example of expected JSON structure
         
     Returns:
-        Text that meets word count requirements (or best attempt)
+        Formatted prompt with JSON example
     """
-    word_count = count_words(text)
-    min_words = target_words - tolerance
-    max_words = target_words + tolerance
-    
-    # If within tolerance, return as is
-    if min_words <= word_count <= max_words:
-        logger.debug(f"Word count {word_count} is within target {target_words} ± {tolerance}")
-        return text
-    
-    logger.warning(f"Word count {word_count} outside target range {min_words}-{max_words}")
-    
-    # If no LLM provided, return original text
-    if not llm or not prompt:
-        logger.warning("No LLM provided for word count correction, returning original text")
-        return text
-    
-    # Try to regenerate with specific word count instruction
-    best_text = text
-    best_diff = abs(word_count - target_words)
-    
-    for attempt in range(max_retries):
-        try:
-            # Modify prompt to emphasize word count
-            if word_count > max_words:
-                instruction = f"\n\nYour response was {word_count} words, which is too long. Please shorten it to EXACTLY {target_words} words."
-            else:
-                instruction = f"\n\nYour response was {word_count} words, which is too short. Please expand it to EXACTLY {target_words} words."
-            
-            messages = [
-                SystemMessage(content=f"You must respond with EXACTLY {target_words} words. Count carefully."),
-                HumanMessage(content=prompt + instruction)
-            ]
-            
-            response = llm.invoke(messages)
-            new_text = response.content if hasattr(response, 'content') else str(response)
-            new_count = count_words(new_text)
-            
-            logger.info(f"Regeneration attempt {attempt + 1}: {new_count} words")
-            
-            # Check if this is better
-            new_diff = abs(new_count - target_words)
-            if new_diff < best_diff:
-                best_text = new_text
-                best_diff = new_diff
-            
-            # If within tolerance, we're done
-            if min_words <= new_count <= max_words:
-                logger.info(f"Successfully adjusted word count to {new_count}")
-                return new_text
-                
-        except Exception as e:
-            logger.error(f"Error during word count adjustment attempt {attempt + 1}: {e}")
-    
-    logger.warning(f"Could not achieve exact word count after {max_retries} attempts. Best attempt: {count_words(best_text)} words")
-    return best_text
-
-
-def format_json_prompt(prompt: str, example_structure: Dict[str, Any]) -> str:
-    """
-    Format a prompt to ensure JSON response with example structure.
-    
-    Args:
-        prompt: Original prompt
-        example_structure: Example of expected JSON structure
-        
-    Returns:
-        Formatted prompt that emphasizes JSON response
-    """
-    json_example = json.dumps(example_structure, indent=2)
-    
     formatted = f"""{prompt}
 
-IMPORTANT: Respond with valid JSON only. No markdown, no extra text.
+You must respond with valid JSON matching this structure.
+No markdown, no extra text.
 
 Expected JSON structure:
-{json_example}
+{json.dumps(json_example, indent=2)}
 
 Your response must be parseable by json.loads() without any preprocessing."""
     
@@ -560,3 +438,72 @@ def call_llm_with_json(
         function_name=function_name,
         require_keys=required_keys
     )
+
+
+# Word count validation helper
+def validate_word_count(
+    text: str,
+    target_words: int,
+    tolerance: int = 10,
+    llm: Optional[ChatOpenAI] = None,
+    prompt: Optional[str] = None
+) -> str:
+    """
+    Validate and optionally adjust text to meet word count requirements.
+    
+    Args:
+        text: Text to validate
+        target_words: Target word count
+        tolerance: Acceptable deviation from target
+        llm: Optional LLM to use for adjustment
+        prompt: Original prompt if adjustment needed
+        
+    Returns:
+        Validated/adjusted text
+    """
+    word_count = len(text.split())
+    
+    # Check if within tolerance
+    if abs(word_count - target_words) <= tolerance:
+        return text
+    
+    # Log the issue
+    logger.warning(f"Text has {word_count} words, target is {target_words}")
+    
+    # If no LLM provided or no prompt, return as-is
+    if not llm or not prompt:
+        return text
+    
+    # Try to adjust
+    try:
+        adjustment_prompt = f"""The following text has {word_count} words but needs exactly {target_words} words (±{tolerance}).
+Please adjust it to meet the word count while preserving all key information.
+
+Current text:
+{text}
+
+Original instructions:
+{prompt}
+
+Provide only the adjusted text, no commentary."""
+        
+        messages = [
+            SystemMessage(content="You are an expert editor who can precisely adjust text length."),
+            HumanMessage(content=adjustment_prompt)
+        ]
+        
+        response = llm.invoke(messages)
+        adjusted_text = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+        
+        # Verify the adjustment
+        new_count = len(adjusted_text.split())
+        if abs(new_count - target_words) <= tolerance:
+            logger.info(f"Successfully adjusted text from {word_count} to {new_count} words")
+            return adjusted_text
+        else:
+            logger.warning(f"Adjustment failed: {new_count} words. Using original.")
+            return text
+            
+    except Exception as e:
+        logger.error(f"Failed to adjust word count: {e}")
+        return text
