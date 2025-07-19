@@ -238,9 +238,17 @@ def ensure_json_response(
         try:
             logger.debug(f"{function_name}: LLM call attempt {attempt + 1}/{retry_count}")
             
-            # FIXED: Access the model name correctly
-            # ChatOpenAI from langchain_openai stores it as 'model'
-            model_name = llm.model
+            # FIXED: Access the model name correctly - try multiple attributes
+            if hasattr(llm, 'model_name'):
+                model_name = llm.model_name
+            elif hasattr(llm, 'model'):
+                model_name = llm.model
+            elif hasattr(llm, '_llm_type'):
+                model_name = llm._llm_type
+            else:
+                # Fallback - use a default
+                model_name = "gpt-4.1-mini"
+                logger.warning(f"{function_name}: Could not determine model name, using default: {model_name}")
             
             # Create a new LLM instance with JSON response format for this specific call
             json_llm = ChatOpenAI(
