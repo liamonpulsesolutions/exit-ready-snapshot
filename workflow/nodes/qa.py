@@ -242,12 +242,12 @@ Only flag TRUE redundancy where:
 - Filler content repeats without purpose
 
 Provide your analysis in this exact JSON format:
-{
+{{
     "redundancy_score": 8,
     "redundant_sections": ["list", "of", "truly", "redundant", "sections"],
     "specific_examples": ["exact duplicate content only"],
     "suggested_consolidations": ["only if truly excessive"]
-}"""
+}}"""
 
     try:
         start_time = time.time()
@@ -301,12 +301,12 @@ Evaluate:
 4. Are recommendations actionable without being prescriptive?
 
 Provide your analysis in this exact JSON format:
-{
+{{
     "tone_score": 8,
     "tone_issues": ["list", "specific", "tone", "problems"],
     "inconsistent_sections": ["sections", "with", "tone", "issues"],
     "improvement_suggestions": ["specific", "fixes"]
-}"""
+}}"""
 
     try:
         start_time = time.time()
@@ -380,13 +380,13 @@ Whitelist (don't need citations):
 {whitelist}
 
 Provide your analysis in this exact JSON format:
-{
+{{
     "citation_score": 8,
     "total_claims_found": 15,
     "properly_cited": 12,
     "issues_found": 3,
     "uncited_claims": ["specific", "uncited", "statistical", "claims"]
-}"""
+}}"""
 
     # Common phrases that don't need citations
     uncited_whitelist_phrases = [
@@ -459,14 +459,14 @@ Check for:
 Flag any instances where outcomes are presented as guarantees rather than typical results.
 
 Provide your analysis in this exact JSON format:
-{
+{{
     "framing_score": 9,
     "promises_found": 0,
     "promise_phrases": ["list", "of", "problematic", "phrases"],
     "properly_framed": 15,
     "framing_examples": ["good", "framing", "examples"],
     "needs_revision": ["phrases", "that", "need", "fixes"]
-}"""
+}}"""
 
     try:
         start_time = time.time()
@@ -550,15 +550,15 @@ Redundancy Issues: {redundancy}
 Tone Issues: {tone}
 
 Provide fixed content in this exact JSON format:
-{
+{{
     "executive_summary": "fixed executive summary if needed",
-    "recommendations": {
+    "recommendations": {{
         "financial_readiness": ["rec 1", "rec 2"],
         "revenue_quality": ["rec 1", "rec 2"],
         "operational_resilience": ["rec 1", "rec 2"]
-    },
+    }},
     "next_steps": "fixed next steps if needed"
-}
+}}
 
 Focus on fixing ONLY the sections with issues. Keep other sections unchanged.
 Ensure all content remains professional, specific, and actionable."""
@@ -630,10 +630,10 @@ Guidelines:
 6. Use "typically/often/generally" language for all outcome predictions
 
 Provide the polished version in this exact JSON format:
-{
+{{
     "executive_summary": "polished executive summary here",
     "key_improvements": ["what you improved", "second improvement", "third improvement"]
-}"""
+}S}"""
 
     try:
         start_time = time.time()
