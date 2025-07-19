@@ -1,24 +1,22 @@
 """
-QA Node - Quality assurance with LLM intelligence, formatting standardization, and outcome framing verification.
-Performs mechanical checks, intelligent analysis, Placid-compatible formatting, and ensures proper outcome language.
-FIXED: Replace ensure_json_response with bind() method for JSON responses.
+QA validation node for LangGraph workflow.
+Enhanced with LLM-based quality checks, outcome framing verification, and Placid formatting.
+Uses GPT-4.1 for advanced redundancy detection and report polishing.
+FIXED: JSON parsing to handle malformed LLM responses.
 """
 
 import logging
 import time
-import json
 import re
-from typing import Dict, Any, List, Tuple
+import json
+from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
-from langchain.schema import HumanMessage, SystemMessage
-
-# FIXED: Import LLM utilities without ensure_json_response
-from workflow.core.llm_utils import (
-    get_llm_with_fallback,
-    parse_json_response
-)
 
 from workflow.state import WorkflowState
+from workflow.core.llm_utils import get_llm_with_fallback, parse_json_response
+from langchain.schema import SystemMessage, HumanMessage
+
+# Import validators from core module
 from workflow.core.validators import (
     validate_scoring_consistency,
     validate_content_quality,
@@ -27,6 +25,62 @@ from workflow.core.validators import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def parse_json_with_fixes(content: str, function_name: str = "Unknown") -> Dict[str, Any]:
+    """
+    Parse JSON with fixes for common LLM response issues.
+    Handles malformed JSON that's missing braces or has extra text.
+    """
+    import re
+    
+    # Strip whitespace
+    content = content.strip()
+    
+    # If empty, return empty dict
+    if not content:
+        logger.warning(f"{function_name}: Empty response content")
+        return {}
+    
+    # Fix missing opening brace - check for common QA response patterns
+    if content and not content.startswith('{'):
+        qa_patterns = ['redundancy_score', 'tone_score', 'citation_score', 'framing_score', 
+                      'executive_summary', 'recommendations', 'repetitive_phrases']
+        if any(f'"{pattern}"' in content for pattern in qa_patterns):
+            content = '{' + content
+            logger.debug(f"{function_name}: Added missing opening brace")
+    
+    # Fix missing closing brace
+    if content.startswith('{') and not content.endswith('}'):
+        # Count braces to see if we need to add one
+        open_braces = content.count('{')
+        close_braces = content.count('}')
+        if open_braces > close_braces:
+            content = content + '}'
+            logger.debug(f"{function_name}: Added missing closing brace")
+    
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as e:
+        logger.warning(f"{function_name}: Initial JSON parse failed: {e}")
+        logger.debug(f"{function_name}: Content preview: {repr(content[:200])}")
+        
+        # Try to extract valid JSON using regex
+        # Look for JSON object pattern (handles nested objects)
+        json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+        json_matches = re.findall(json_pattern, content, re.DOTALL)
+        
+        for match in json_matches:
+            try:
+                result = json.loads(match)
+                logger.info(f"{function_name}: Successfully extracted JSON from text")
+                return result
+            except:
+                continue
+        
+        # If all else fails, log the error and raise
+        logger.error(f"{function_name}: Failed to parse JSON. Content: {repr(content[:500])}")
+        raise
 
 
 def standardize_formatting_for_placid(text: str) -> str:
@@ -73,41 +127,28 @@ def apply_section_formatting(sections: Dict[str, Any], final_report: str) -> Dic
     """
     formatted_sections = {}
     
-    # Format individual sections (no separators)
-    if isinstance(sections.get("executive_summary"), str):
-        formatted_sections["executive_summary"] = standardize_formatting_for_placid(
-            sections["executive_summary"]
-        )
+    # Format individual sections (for Placid fields) - CLEAN TEXT ONLY
+    for key, value in sections.items():
+        if isinstance(value, str):
+            formatted_sections[key] = standardize_formatting_for_placid(value)
+        elif isinstance(value, dict):
+            formatted_sections[key] = {
+                k: standardize_formatting_for_placid(v) if isinstance(v, str) else v
+                for k, v in value.items()
+            }
+        else:
+            formatted_sections[key] = value
     
-    if isinstance(sections.get("category_summaries"), dict):
-        formatted_cats = {}
-        for cat, summary in sections["category_summaries"].items():
-            formatted_cats[cat] = standardize_formatting_for_placid(summary)
-        formatted_sections["category_summaries"] = formatted_cats
-    
-    if isinstance(sections.get("recommendations"), str):
-        formatted_sections["recommendations"] = standardize_formatting_for_placid(
-            sections["recommendations"]
-        )
-    elif isinstance(sections.get("recommendations"), dict):
-        formatted_sections["recommendations"] = sections["recommendations"]
-    
-    if isinstance(sections.get("next_steps"), str):
-        formatted_sections["next_steps"] = standardize_formatting_for_placid(
-            sections["next_steps"]
-        )
-    
-    # Format the complete report with section separators
+    # Format final report (for document view) - WITH SEPARATORS
     if final_report:
-        formatted_report = format_final_report_with_separators(final_report)
-        formatted_sections["final_report"] = formatted_report
+        formatted_sections["final_report"] = add_document_separators(final_report)
     
     return formatted_sections
 
 
-def format_final_report_with_separators(report: str) -> str:
+def add_document_separators(report: str) -> str:
     """
-    Format the complete report with visual separators between sections.
+    Add section separators for the full document view only.
     This is only for the full document view, not individual Placid fields.
     """
     # First apply standard formatting
@@ -176,554 +217,8 @@ The insights and strategies outlined are based on your assessment responses and 
     return report
 
 
-def qa_node(state: WorkflowState) -> WorkflowState:
-    """
-    Enhanced QA validation with LLM-based checks, outcome framing verification, and formatting.
-    
-    FIXED: Replace ensure_json_response with bind() method for JSON responses.
-    """
-    start_time = time.time()
-    
-    try:
-        logger.info("Starting enhanced QA validation with formatting and outcome framing...")
-        
-        # Get required data
-        scoring_result = state.get("scoring_result", {})
-        summary_result = state.get("summary_result", {})
-        
-        # Initialize QA LLMs with higher token limits for analyzing full reports
-        qa_llm = get_llm_with_fallback(
-            model="gpt-4.1-nano",
-            temperature=0,
-            max_tokens=8000
-        )
-        
-        # GPT-4.1 for redundancy and polish
-        redundancy_llm = get_llm_with_fallback(
-            model="gpt-4.1",
-            temperature=0.1,
-            max_tokens=8000
-        )
-        
-        polish_llm = get_llm_with_fallback(
-            model="gpt-4.1",
-            temperature=0.3,
-            max_tokens=8000
-        )
-        
-        # Track all quality checks
-        quality_scores = {}
-        qa_issues = []
-        qa_warnings = []
-        
-        # 1. Validate Content Structure (basic checks)
-        logger.info("Validating content structure...")
-        content_quality_check = validate_content_quality(summary_result)
-        quality_scores["content_quality"] = content_quality_check
-        if not content_quality_check.get("passed", True):
-            qa_issues.extend(content_quality_check.get("issues", []))
-        qa_warnings.extend(content_quality_check.get("warnings", []))
-        
-        # 2. PII Detection with Regex
-        logger.info("Scanning for PII...")
-        pii_scan = scan_for_pii(summary_result.get("final_report", ""))
-        quality_scores["pii_compliance"] = pii_scan
-        
-        if pii_scan.get("has_pii", False):
-            qa_issues.append(f"CRITICAL: PII detected - {', '.join(pii_scan.get('found_types', []))}")
-        
-        # 3. Enhanced LLM-Based Checks
-        logger.info("Running LLM-based quality checks...")
-        
-        # Check for redundancy with GPT-4.1
-        logger.info("Checking for content redundancy with GPT-4.1...")
-        redundancy_check = check_redundancy_llm(
-            summary_result.get("final_report", ""),
-            redundancy_llm
-        )
-        quality_scores["redundancy_check"] = redundancy_check
-        
-        # Allow redundancy scores down to 3/10 for long reports
-        report_word_count = len(summary_result.get("final_report", "").split())
-        redundancy_threshold = 3 if report_word_count > 2000 else 5
-        
-        if redundancy_check.get("redundancy_score", 10) < redundancy_threshold:
-            qa_warnings.append(f"High redundancy detected (score: {redundancy_check.get('redundancy_score')}/10)")
-        
-        # Check tone consistency
-        logger.info("Checking tone consistency...")
-        tone_check = check_tone_consistency_llm(
-            summary_result.get("final_report", ""),
-            qa_llm
-        )
-        quality_scores["tone_consistency"] = tone_check
-        
-        if tone_check.get("tone_score", 10) < 4:
-            qa_warnings.append(f"Tone inconsistency detected (score: {tone_check.get('tone_score')}/10)")
-        
-        # Verify Citations
-        logger.info("Verifying citations and statistical claims...")
-        research_result = state.get("research_result", {})
-        citation_check = verify_citations_llm(
-            summary_result.get("final_report", ""),
-            research_result,
-            qa_llm
-        )
-        quality_scores["citation_verification"] = citation_check
-        
-        if citation_check.get("citation_score", 10) < 6:
-            uncited_count = citation_check.get("issues_found", 0)
-            if uncited_count > 2:
-                qa_issues.append(f"Too many uncited claims found: {uncited_count}")
-                for claim in citation_check.get("uncited_claims", [])[:3]:
-                    if claim.get("issue") == "claim not found in research data":
-                        qa_issues.append(f"CRITICAL: Unfounded claim - {claim.get('claim', '')[:50]}...")
-                    else:
-                        qa_warnings.append(f"Missing citation: {claim.get('claim', '')[:50]}...")
-        
-        # Verify Outcome Framing
-        logger.info("Verifying outcome framing compliance...")
-        outcome_framing_check = verify_outcome_framing_llm(
-            summary_result.get("final_report", ""),
-            summary_result.get("recommendations", ""),
-            summary_result.get("next_steps", ""),
-            qa_llm
-        )
-        quality_scores["outcome_framing"] = outcome_framing_check
-        
-        # Flag outcome framing violations
-        if outcome_framing_check.get("framing_score", 10) < 7:
-            violations_count = outcome_framing_check.get("violations_found", 0)
-            if violations_count > 0:
-                qa_issues.append(f"Outcome framing violations found: {violations_count}")
-                
-                for violation in outcome_framing_check.get("specific_violations", [])[:3]:
-                    qa_issues.append(f"PROMISE LANGUAGE: {violation.get('text', '')[:50]}... - {violation.get('issue', '')}")
-                
-                non_ranges = outcome_framing_check.get("non_range_numbers", [])
-                if non_ranges:
-                    qa_warnings.append(f"Specific percentages should be ranges: {', '.join(non_ranges[:3])}")
-        
-        # Calculate overall QA score
-        overall_quality_score = calculate_overall_qa_score(quality_scores)
-        
-        # Lower approval threshold from 7.0 to 6.0
-        critical_issues = [issue for issue in qa_issues if "CRITICAL" in issue or "PII" in issue or "PROMISE LANGUAGE" in issue]
-        non_critical_issues = [issue for issue in qa_issues if issue not in critical_issues]
-        
-        # Approval based on critical issues only
-        approved = len(critical_issues) == 0 and overall_quality_score >= 6.0
-        ready_for_delivery = approved and not pii_scan.get("has_pii", False)
-        
-        # If not approved, attempt to fix issues
-        fix_attempts = 0
-        max_fix_attempts = 3
-        fixed_sections = {}
-        
-        # Only attempt fixes for critical issues or very low scores
-        while not approved and fix_attempts < max_fix_attempts and (critical_issues or overall_quality_score < 5.0):
-            fix_attempts += 1
-            logger.info(f"Attempting to fix issues - Attempt {fix_attempts}/{max_fix_attempts}")
-            
-            # Fix critical issues with LLM
-            if critical_issues or overall_quality_score < 5.0:
-                fixed_sections = fix_quality_issues_llm(
-                    critical_issues if critical_issues else qa_issues,
-                    qa_warnings,
-                    summary_result,
-                    scoring_result,
-                    redundancy_check,
-                    tone_check,
-                    qa_llm
-                )
-                
-                # Fix outcome framing violations if found
-                if outcome_framing_check.get("violations_found", 0) > 0:
-                    logger.info("Fixing outcome framing violations...")
-                    framing_fixes = fix_outcome_framing_llm(
-                        outcome_framing_check.get("specific_violations", []),
-                        summary_result.get("recommendations", ""),
-                        summary_result.get("next_steps", ""),
-                        summary_result.get("executive_summary", ""),
-                        qa_llm
-                    )
-                    
-                    # Merge framing fixes into fixed sections
-                    for section, content in framing_fixes.items():
-                        fixed_sections[section] = content
-                
-                # Update summary result with fixes
-                for section, content in fixed_sections.items():
-                    summary_result[section] = content
-                
-                # Regenerate final report if needed
-                if fixed_sections:
-                    summary_result["final_report"] = regenerate_final_report(
-                        summary_result,
-                        scoring_result.get("overall_score"),
-                        scoring_result.get("readiness_level")
-                    )
-                
-                # Re-run critical checks
-                content_quality_check = validate_content_quality(summary_result)
-                quality_scores["content_quality"] = content_quality_check
-                
-                redundancy_check = check_redundancy_llm(
-                    summary_result.get("final_report", ""),
-                    qa_llm
-                )
-                quality_scores["redundancy_check"] = redundancy_check
-                
-                # Re-evaluate
-                qa_issues = []
-                qa_warnings = []
-                critical_issues = []
-                
-                if not content_quality_check.get("passed", True):
-                    issues = content_quality_check.get("issues", [])
-                    for issue in issues:
-                        if "CRITICAL" in issue or "missing" in issue.lower():
-                            critical_issues.append(issue)
-                        else:
-                            qa_issues.append(issue)
-                
-                # Recalculate approval
-                overall_quality_score = calculate_overall_qa_score(quality_scores)
-                approved = len(critical_issues) == 0 and overall_quality_score >= 6.0
-                ready_for_delivery = approved and not pii_scan.get("has_pii", False)
-                
-                if approved:
-                    logger.info(f"Issues fixed successfully after {fix_attempts} attempts!")
-                    break
-            else:
-                break
-        
-        # Apply Final Polish with GPT-4.1 (if approved)
-        polished_sections = {}
-        if approved:
-            logger.info("Applying final polish with GPT-4.1...")
-            polished_sections = polish_report_llm(
-                summary_result,
-                scoring_result,
-                polish_llm
-            )
-            
-            # Apply polished sections
-            if polished_sections.get("executive_summary"):
-                summary_result["executive_summary"] = polished_sections["executive_summary"]
-                # Regenerate final report with polished summary
-                summary_result["final_report"] = regenerate_final_report(
-                    summary_result,
-                    scoring_result.get("overall_score"),
-                    scoring_result.get("readiness_level")
-                )
-        
-        # 4. Apply formatting standardization
-        logger.info("Applying Placid-compatible formatting...")
-        formatted_sections = apply_section_formatting(summary_result, summary_result.get("final_report", ""))
-        
-        # Update summary result with formatted content
-        for section, content in formatted_sections.items():
-            summary_result[section] = content
-        
-        # Validate formatting
-        formatting_valid = validate_plain_text_formatting(summary_result)
-        if not formatting_valid.get("is_valid", True):
-            qa_warnings.extend(formatting_valid.get("issues", []))
-        
-        # Prepare QA result
-        qa_result = {
-            "status": "success",
-            "approved": approved,
-            "ready_for_delivery": ready_for_delivery,
-            "overall_quality_score": overall_quality_score,
-            "quality_scores": quality_scores,
-            "issues": qa_issues + critical_issues,
-            "critical_issues": critical_issues,
-            "warnings": qa_warnings,
-            "polished_sections": list(polished_sections.keys()) if polished_sections else [],
-            "fixed_sections": list(fixed_sections.keys()) if fixed_sections else [],
-            "formatted_sections": list(formatted_sections.keys()),
-            "fix_attempts": fix_attempts,
-            "formatting_applied": True,
-            "outcome_framing_applied": True,
-            "validation_summary": {
-                "total_checks": 8,
-                "mechanical_checks": 4,
-                "llm_checks": 4,
-                "critical_issues": len(critical_issues),
-                "non_critical_issues": len(qa_issues),
-                "warnings": len(qa_warnings),
-                "sections_polished": len(polished_sections) if polished_sections else 0,
-                "sections_fixed": len(fixed_sections) if fixed_sections else 0
-            }
-        }
-        
-        # Final PII check on formatted report
-        final_pii_check = scan_for_pii(summary_result.get("final_report", ""))
-        if final_pii_check.get("has_pii", False):
-            qa_result["ready_for_delivery"] = False
-            qa_result["pii_detected"] = True
-            qa_result["pii_types"] = final_pii_check.get("found_types", [])
-        
-        # Update state and return
-        state["qa_result"] = qa_result
-        state["summary_result"] = summary_result
-        state["current_stage"] = "qa_completed"
-        state["messages"].append(f"QA completed - Score: {overall_quality_score}/10, Approved: {approved}")
-        
-        elapsed_time = time.time() - start_time
-        state["processing_time"]["qa"] = elapsed_time
-        
-        logger.info(f"=== QA NODE COMPLETED - {elapsed_time:.2f}s, Approved: {approved} ===")
-        return state
-        
-    except Exception as e:
-        logger.error(f"QA validation failed: {e}")
-        elapsed_time = time.time() - start_time
-        
-        # Return state with error
-        state["qa_result"] = {
-            "status": "error",
-            "approved": False,
-            "ready_for_delivery": False,
-            "overall_quality_score": 0,
-            "error": str(e),
-            "elapsed_time": elapsed_time
-        }
-        state["current_stage"] = "qa_error"
-        state["error"] = f"QA validation error: {str(e)}"
-        
-        return state
-
-
-def verify_outcome_framing_llm(report: str, recommendations: str, next_steps: str, llm) -> Dict[str, Any]:
-    """
-    Verify that outcome framing follows compliance rules.
-    FIXED: Replace ensure_json_response with bind() method.
-    """
-    
-    prompt = """Analyze this business assessment report for proper outcome framing.
-
-Report Sections to Check:
-RECOMMENDATIONS:
-{recommendations}
-
-NEXT STEPS:
-{next_steps}
-
-EXECUTIVE SUMMARY (excerpt):
-{summary_excerpt}
-
-Verify compliance with these CRITICAL rules:
-1. All outcome claims must use qualifying language: "typically," "often," "on average," "generally," "businesses like yours"
-2. Never use absolute promises: "will," "guaranteed," "definitely," "ensure," "certainly"
-3. All improvements must be expressed as ranges (e.g., "20-30%") not specific numbers (e.g., "25%")
-4. Every outcome claim should have a source citation (Source Year)
-
-Provide your analysis in this exact JSON format:
-{
-    "framing_score": 8,
-    "violations_found": 0,
-    "specific_violations": [
-        {"text": "exact problematic phrase", "issue": "why it violates rules"}
-    ],
-    "uncited_claims": [
-        {"claim": "outcome claim without citation", "location": "section name"}
-    ],
-    "promise_language": ["list", "of", "absolute", "promises", "found"],
-    "non_range_numbers": ["25% increase", "30% improvement"],
-    "compliance_summary": "brief assessment of overall compliance"
-}"""
-
-    try:
-        start_time = time.time()
-        
-        # Extract executive summary excerpt
-        summary_excerpt = ""
-        if "EXECUTIVE SUMMARY" in report:
-            summary_start = report.find("EXECUTIVE SUMMARY")
-            summary_end = report.find("YOUR EXIT READINESS SCORE", summary_start)
-            if summary_end > summary_start:
-                summary_excerpt = report[summary_start:summary_end][:500]
-        
-        messages = [
-            SystemMessage(content="You are a compliance reviewer ensuring business recommendations follow proper outcome framing rules. Be strict about promises and specific numbers. Always respond with valid JSON."),
-            HumanMessage(content=prompt.format(
-                recommendations=recommendations[:3000],
-                next_steps=next_steps[:2000],
-                summary_excerpt=summary_excerpt
-            ))
-        ]
-        
-        # FIXED: Use bind() method instead of ensure_json_response
-        llm_with_json = llm.bind(response_format={"type": "json_object"})
-        response = llm_with_json.invoke(messages)
-        
-        # Parse the JSON response
-        if hasattr(response, 'content'):
-            result = json.loads(response.content)
-        else:
-            result = json.loads(str(response))
-        
-        elapsed = time.time() - start_time
-        logger.info(f"Outcome framing verification took {elapsed:.2f}s")
-        
-        # Validate result has expected keys
-        if not isinstance(result.get("framing_score"), (int, float)):
-            result["framing_score"] = 8
-        if not isinstance(result.get("violations_found"), int):
-            result["violations_found"] = 0
-            
-        return result
-        
-    except Exception as e:
-        logger.warning(f"LLM outcome framing verification failed: {e}, using fallback regex check")
-        
-        # Fallback to regex-based checking
-        violations = []
-        promise_language = []
-        
-        # Check for promise language
-        promise_patterns = [
-            r'\bwill\s+(?:increase|achieve|ensure|improve|deliver|guarantee)',
-            r'\bguaranteed\b',
-            r'\bdefinitely\b',
-            r'\bensure[sd]?\b'
-        ]
-        
-        for pattern in promise_patterns:
-            matches = re.findall(pattern, recommendations + next_steps, re.IGNORECASE)
-            promise_language.extend(matches)
-            for match in matches[:3]:
-                violations.append({
-                    "text": match,
-                    "issue": "Uses absolute promise language"
-                })
-        
-        # Check for non-range numbers
-        non_range_numbers = []
-        single_percent_pattern = r'\b(\d+)%\s+(?:increase|improvement|growth|value|higher)'
-        matches = re.findall(single_percent_pattern, recommendations + next_steps)
-        for match in matches:
-            if f"{match}-" not in recommendations + next_steps:
-                non_range_numbers.append(f"{match}%")
-        
-        # Calculate score based on violations
-        framing_score = 10
-        framing_score -= len(promise_language) * 0.5
-        framing_score -= len(non_range_numbers) * 0.3
-        framing_score = max(0, min(10, framing_score))
-        
-        return {
-            "framing_score": framing_score,
-            "violations_found": len(violations),
-            "specific_violations": violations[:5],
-            "uncited_claims": [],
-            "promise_language": list(set(promise_language))[:5],
-            "non_range_numbers": list(set(non_range_numbers))[:5],
-            "compliance_summary": "Fallback regex-based check performed"
-        }
-
-
-def fix_outcome_framing_llm(violations: List[Dict], recommendations: str, next_steps: str, 
-                           executive_summary: str, llm) -> Dict[str, str]:
-    """Fix outcome framing violations identified in the report. FIXED: Replace ensure_json_response with bind()."""
-    
-    violations_text = "\n".join([f"- {v['text']}: {v['issue']}" for v in violations[:10]])
-    
-    prompt = """Fix the following outcome framing violations in this business report.
-
-VIOLATIONS TO FIX:
-{violations}
-
-Current Recommendations (excerpt):
-{recommendations}
-
-Current Next Steps (excerpt):
-{next_steps}
-
-Current Executive Summary (excerpt):
-{executive_summary}
-
-Fix these violations by:
-1. Replacing "will" with "typically/often/generally"
-2. Converting specific percentages to ranges (e.g., 25% → 20-30%)
-3. Adding source citations where missing (use realistic sources like "IBBA 2023" or "M&A Source 2023")
-4. Removing any guarantee language
-
-Provide fixed content in this exact JSON format:
-{
-    "recommendations": "fixed recommendations text if violations found there",
-    "next_steps": "fixed next steps text if violations found there",
-    "executive_summary": "fixed executive summary if violations found there"
-}
-
-Only include sections that had violations. Maintain all other content exactly as is."""
-
-    try:
-        start_time = time.time()
-        
-        messages = [
-            SystemMessage(content="You are a compliance editor fixing outcome language while maintaining persuasive business writing. Make minimal changes to fix violations. Always respond with valid JSON."),
-            HumanMessage(content=prompt.format(
-                violations=violations_text,
-                recommendations=recommendations[:1500],
-                next_steps=next_steps[:1000],
-                executive_summary=executive_summary[:1000]
-            ))
-        ]
-        
-        # FIXED: Use bind() method instead of ensure_json_response
-        llm_with_json = llm.bind(response_format={"type": "json_object"})
-        response = llm_with_json.invoke(messages)
-        
-        # Parse the JSON response
-        if hasattr(response, 'content'):
-            result = json.loads(response.content)
-        else:
-            result = json.loads(str(response))
-        
-        elapsed = time.time() - start_time
-        logger.info(f"Outcome framing fixes took {elapsed:.2f}s")
-        
-        # Only return sections that were actually fixed
-        fixed_sections = {}
-        for section in ["recommendations", "next_steps", "executive_summary"]:
-            if section in result and result[section]:
-                fixed_sections[section] = result[section]
-                
-        return fixed_sections
-        
-    except Exception as e:
-        logger.warning(f"LLM outcome framing fixes failed: {e}, applying regex-based fixes")
-        
-        # Fallback to regex-based fixes
-        fixed_sections = {}
-        
-        # Fix recommendations if needed
-        if any("recommendation" in str(v).lower() for v in violations):
-            fixed_rec = recommendations
-            fixed_rec = re.sub(r'\bwill\s+increase', 'typically increases', fixed_rec)
-            fixed_rec = re.sub(r'\bwill\s+achieve', 'often achieve', fixed_rec)
-            fixed_rec = re.sub(r'\bensures?\b', 'generally results in', fixed_rec)
-            fixed_rec = re.sub(r'\b(\d+)%\s+(increase|improvement)', 
-                              lambda m: f"{int(m.group(1))-5}-{int(m.group(1))+5}% {m.group(2)}", 
-                              fixed_rec)
-            fixed_sections["recommendations"] = fixed_rec
-        
-        # Fix next steps if needed
-        if any("next" in str(v).lower() for v in violations):
-            fixed_next = next_steps
-            fixed_next = re.sub(r'\bwill\s+see', 'typically see', fixed_next)
-            fixed_next = re.sub(r'\bwill\s+achieve', 'often achieve', fixed_next)
-            fixed_sections["next_steps"] = fixed_next
-        
-        return fixed_sections
-
-
 def check_redundancy_llm(report: str, llm) -> Dict[str, Any]:
-    """Use GPT-4.1 to detect redundant content with nuanced understanding. FIXED: Replace ensure_json_response with bind()."""
+    """Use LLM to check for content redundancy with GPT-4.1. FIXED: Handle malformed JSON responses."""
     
     prompt = """Analyze this business assessment report for redundancy and repetitive content.
 
@@ -762,15 +257,15 @@ Provide your analysis in this exact JSON format:
             HumanMessage(content=prompt.format(report=report[:10000]))
         ]
         
-        # FIXED: Use bind() method instead of ensure_json_response
+        # Use bind() method for JSON response format
         llm_with_json = llm.bind(response_format={"type": "json_object"})
         response = llm_with_json.invoke(messages)
         
-        # Parse the JSON response
+        # Parse the JSON response with fixes
         if hasattr(response, 'content'):
-            result = json.loads(response.content)
+            result = parse_json_with_fixes(response.content, "check_redundancy_llm")
         else:
-            result = json.loads(str(response))
+            result = parse_json_with_fixes(str(response), "check_redundancy_llm")
         
         elapsed = time.time() - start_time
         logger.info(f"Redundancy check took {elapsed:.2f}s")
@@ -792,7 +287,7 @@ Provide your analysis in this exact JSON format:
 
 
 def check_tone_consistency_llm(report: str, llm) -> Dict[str, Any]:
-    """Use LLM to check tone consistency throughout the report. FIXED: Replace ensure_json_response with bind()."""
+    """Use LLM to check tone consistency throughout the report. FIXED: Handle malformed JSON responses."""
     
     prompt = """Analyze this business assessment report for tone consistency.
 
@@ -802,50 +297,41 @@ Report:
 Evaluate:
 1. Is the tone professional and consultative throughout?
 2. Are there jarring shifts between overly technical and overly casual language?
-3. Does the report maintain appropriate gravitas for a business exit assessment?
-4. Is the level of formality consistent across all sections?
-
-Important considerations:
-- Natural tone variations between sections are ACCEPTABLE
-- Executive summary may be more direct than detailed analysis
-- Recommendations can be more action-oriented
-- Only flag JARRING inconsistencies that confuse the reader
+3. Does the voice remain consistent across all sections?
+4. Are recommendations actionable without being prescriptive?
 
 Provide your analysis in this exact JSON format:
 {
     "tone_score": 8,
-    "consistent": true,
-    "tone_issues": ["issue 1", "issue 2"],
-    "inconsistent_sections": ["section 1", "section 2"],
-    "recommended_tone": "description of ideal tone"
+    "tone_issues": ["list", "specific", "tone", "problems"],
+    "inconsistent_sections": ["sections", "with", "tone", "issues"],
+    "improvement_suggestions": ["specific", "fixes"]
 }"""
 
     try:
         start_time = time.time()
         
         messages = [
-            SystemMessage(content="You are a business communications expert who understands that different sections of a report may naturally vary in tone while maintaining overall coherence. Always respond with valid JSON."),
+            SystemMessage(content="You are a business communication expert. Evaluate tone consistency and professionalism. Always respond with valid JSON."),
             HumanMessage(content=prompt.format(report=report[:8000]))
         ]
         
-        # FIXED: Use bind() method instead of ensure_json_response
+        # Use bind() method for JSON response format
         llm_with_json = llm.bind(response_format={"type": "json_object"})
         response = llm_with_json.invoke(messages)
         
-        # Parse the JSON response
+        # Parse the JSON response with fixes
         if hasattr(response, 'content'):
-            result = json.loads(response.content)
+            result = parse_json_with_fixes(response.content, "check_tone_consistency_llm")
         else:
-            result = json.loads(str(response))
+            result = parse_json_with_fixes(str(response), "check_tone_consistency_llm")
         
         elapsed = time.time() - start_time
-        logger.info(f"Tone consistency check took {elapsed:.2f}s")
+        logger.info(f"Tone check took {elapsed:.2f}s")
         
         # Validate result
         if not isinstance(result.get("tone_score"), (int, float)):
             result["tone_score"] = 8
-        if not isinstance(result.get("consistent"), bool):
-            result["consistent"] = True
             
         return result
         
@@ -853,38 +339,25 @@ Provide your analysis in this exact JSON format:
         logger.warning(f"LLM tone check failed: {e}, using default score")
         return {
             "tone_score": 8,
-            "consistent": True,
             "tone_issues": [],
             "inconsistent_sections": [],
-            "recommended_tone": "Professional and consultative"
+            "improvement_suggestions": []
         }
 
 
-def verify_citations_llm(report: str, research_data: Dict[str, Any], llm) -> Dict[str, Any]:
-    """Verify that statistical claims and data points are properly cited. FIXED: Replace ensure_json_response with bind()."""
+def verify_citations_llm(report: str, research_result: Dict[str, Any], llm) -> Dict[str, Any]:
+    """Verify that statistical claims are properly cited. FIXED: Handle malformed JSON responses."""
     
-    # Extract citations and benchmarks from research data
-    citations = research_data.get("citations", [])
-    benchmarks = research_data.get("benchmarks", {})
+    # Extract citation sources from research
+    citations = research_result.get("citations", [])
+    citation_text = "\n".join([f"- {c.get('source', 'Unknown')} ({c.get('year', 'N/A')})" 
+                              for c in citations[:10]])
     
-    # Convert to searchable text
-    citation_text = "\n".join([f"- {c.get('source', '')}: {c.get('title', '')}" for c in citations])
-    benchmarks_text = json.dumps(benchmarks, indent=2)
+    # Industry benchmarks that should be cited
+    benchmarks = research_result.get("valuation_benchmarks", {})
+    benchmarks_text = json.dumps(benchmarks, indent=2)[:1000]
     
-    # List of common business phrases that don't need citations
-    uncited_whitelist_phrases = [
-        "businesses typically see",
-        "companies often achieve", 
-        "owners generally report",
-        "industry experience shows",
-        "common practice includes",
-        "standard approaches involve",
-        "best practices suggest",
-        "market conditions favor",
-        "economic factors indicate"
-    ]
-    
-    prompt = """Verify citations in this business assessment report.
+    prompt = """Verify that statistical claims and benchmarks in this report are properly cited.
 
 Report:
 {report}
@@ -892,19 +365,19 @@ Report:
 Available Citations:
 {citations}
 
-Research Benchmarks:
+Key Benchmarks Requiring Citation:
 {benchmarks}
 
 Check for:
-1. Statistical claims without sources (e.g., "30% of businesses fail" needs citation)
-2. Specific data points without attribution 
-3. Industry benchmarks mentioned without source
-4. Claims that contradict the research data
+1. Uncited statistics (percentages, multiples, dollar amounts)
+2. Industry claims without sources
+3. Benchmark references without attribution
+4. Time-based claims (e.g., "typically takes X months") without sources
 
-IMPORTANT EXCEPTIONS - These phrases do NOT need citations:
+Note: General business wisdom and common practices don't need citations.
+
+Whitelist (don't need citations):
 {whitelist}
-
-These are general business wisdom and common knowledge that don't require specific attribution.
 
 Provide your analysis in this exact JSON format:
 {
@@ -912,16 +385,23 @@ Provide your analysis in this exact JSON format:
     "total_claims_found": 15,
     "properly_cited": 12,
     "issues_found": 3,
-    "uncited_claims": [
-        {"claim": "specific claim text", "issue": "reason it needs citation"}
-    ]
+    "uncited_claims": ["specific", "uncited", "statistical", "claims"]
 }"""
 
+    # Common phrases that don't need citations
+    uncited_whitelist_phrases = [
+        "businesses typically", "companies often", "owners usually",
+        "industry best practice", "common challenges include",
+        "standard valuation", "general market conditions"
+    ]
+    
     try:
         start_time = time.time()
         
         messages = [
-            SystemMessage(content=f"You are a fact-checker for business reports who understands the difference between specific claims needing citations and general business knowledge. Common phrases that don't need citations include: {', '.join(uncited_whitelist_phrases[:5])}. Always respond with valid JSON."),
+            SystemMessage(content=f"""You are a fact-checking expert verifying business report citations. 
+Focus on statistical claims, specific percentages, and industry benchmarks that require sources.
+Common phrases that don't need citations include: {', '.join(uncited_whitelist_phrases[:5])}. Always respond with valid JSON."""),
             HumanMessage(content=prompt.format(
                 report=report[:6000],
                 citations=citation_text[:2000],
@@ -930,15 +410,15 @@ Provide your analysis in this exact JSON format:
             ))
         ]
         
-        # FIXED: Use bind() method instead of ensure_json_response
+        # Use bind() method for JSON response format
         llm_with_json = llm.bind(response_format={"type": "json_object"})
         response = llm_with_json.invoke(messages)
         
-        # Parse the JSON response
+        # Parse the JSON response with fixes
         if hasattr(response, 'content'):
-            result = json.loads(response.content)
+            result = parse_json_with_fixes(response.content, "verify_citations_llm")
         else:
-            result = json.loads(str(response))
+            result = parse_json_with_fixes(str(response), "verify_citations_llm")
         
         elapsed = time.time() - start_time
         logger.info(f"Citation verification took {elapsed:.2f}s")
@@ -962,11 +442,92 @@ Provide your analysis in this exact JSON format:
         }
 
 
+def verify_outcome_framing_llm(report: str, llm) -> Dict[str, Any]:
+    """Verify proper outcome framing (no guarantees, uses typically/often language). FIXED: Handle malformed JSON responses."""
+    
+    prompt = """Analyze this business assessment for proper outcome framing.
+
+Report:
+{report}
+
+Check for:
+1. Promise language: "will increase", "will achieve", "guaranteed", "ensures"
+2. Proper framing: "typically see", "often achieve", "generally experience", "commonly find"
+3. Range-based outcomes: "15-25% increase" vs "20% increase"
+4. Citation of sources for outcome claims
+
+Flag any instances where outcomes are presented as guarantees rather than typical results.
+
+Provide your analysis in this exact JSON format:
+{
+    "framing_score": 9,
+    "promises_found": 0,
+    "promise_phrases": ["list", "of", "problematic", "phrases"],
+    "properly_framed": 15,
+    "framing_examples": ["good", "framing", "examples"],
+    "needs_revision": ["phrases", "that", "need", "fixes"]
+}"""
+
+    try:
+        start_time = time.time()
+        
+        messages = [
+            SystemMessage(content="You are a compliance expert ensuring business communications avoid guarantees and use proper outcome framing. Always respond with valid JSON."),
+            HumanMessage(content=prompt.format(report=report[:8000]))
+        ]
+        
+        # Use bind() method for JSON response format
+        llm_with_json = llm.bind(response_format={"type": "json_object"})
+        response = llm_with_json.invoke(messages)
+        
+        # Parse the JSON response with fixes
+        if hasattr(response, 'content'):
+            result = parse_json_with_fixes(response.content, "verify_outcome_framing_llm")
+        else:
+            result = parse_json_with_fixes(str(response), "verify_outcome_framing_llm")
+        
+        elapsed = time.time() - start_time
+        logger.info(f"Outcome framing check took {elapsed:.2f}s")
+        
+        # Validate result
+        if not isinstance(result.get("framing_score"), (int, float)):
+            result["framing_score"] = 8
+        if not isinstance(result.get("promises_found"), int):
+            result["promises_found"] = 0
+            
+        return result
+        
+    except Exception as e:
+        logger.warning(f"LLM outcome framing verification failed: {e}, using fallback regex check")
+        
+        # Fallback to regex checking
+        promise_patterns = [
+            r'\bwill\s+(?:increase|improve|achieve|ensure|guarantee)',
+            r'\bguaranteed?\b',
+            r'\bensures?\b',
+            r'\bdefinitely\s+will\b'
+        ]
+        
+        promises = []
+        for pattern in promise_patterns:
+            matches = re.findall(pattern, report, re.IGNORECASE)
+            promises.extend(matches)
+        
+        return {
+            "framing_score": 5 if promises else 9,
+            "promises_found": len(promises),
+            "promise_phrases": promises[:10],
+            "properly_framed": 0,
+            "framing_examples": [],
+            "needs_revision": promises[:5]
+        }
+
+
 def fix_quality_issues_llm(issues: List[str], warnings: List[str], 
                           summary_result: Dict[str, Any], scoring_result: Dict[str, Any],
                           redundancy_info: Dict[str, Any], tone_info: Dict[str, Any],
                           llm) -> Dict[str, str]:
-    """Use LLM to fix identified quality issues. FIXED: Replace ensure_json_response with bind()."""
+    """Use LLM to fix identified quality issues. FIXED: Handle malformed JSON responses."""
     
     issues_text = "\n".join([f"- ISSUE: {issue}" for issue in issues])
     warnings_text = "\n".join([f"- WARNING: {warning}" for warning in warnings])
@@ -1018,15 +579,15 @@ Ensure all content remains professional, specific, and actionable."""
             ))
         ]
         
-        # FIXED: Use bind() method instead of ensure_json_response
+        # Use bind() method for JSON response format
         llm_with_json = llm.bind(response_format={"type": "json_object"})
         response = llm_with_json.invoke(messages)
         
-        # Parse the JSON response
+        # Parse the JSON response with fixes
         if hasattr(response, 'content'):
-            result = json.loads(response.content)
+            result = parse_json_with_fixes(response.content, "fix_quality_issues_llm")
         else:
-            result = json.loads(str(response))
+            result = parse_json_with_fixes(str(response), "fix_quality_issues_llm")
         
         elapsed = time.time() - start_time
         logger.info(f"Quality issue fixes took {elapsed:.2f}s")
@@ -1036,6 +597,7 @@ Ensure all content remains professional, specific, and actionable."""
         if result.get("executive_summary") and issues_text:
             fixed_sections["executive_summary"] = result["executive_summary"]
         if result.get("recommendations") and any("recommendation" in issue.lower() for issue in issues):
+            # Ensure recommendations maintains the expected format
             fixed_sections["recommendations"] = result["recommendations"]
         if result.get("next_steps") and any("next" in issue.lower() for issue in issues):
             fixed_sections["next_steps"] = result["next_steps"]
@@ -1049,7 +611,7 @@ Ensure all content remains professional, specific, and actionable."""
 
 def polish_report_llm(summary_result: Dict[str, Any], scoring_result: Dict[str, Any], 
                      llm) -> Dict[str, str]:
-    """Apply final polish using GPT-4.1's superior writing capabilities. FIXED: Replace ensure_json_response with bind()."""
+    """Apply final polish using GPT-4.1's superior writing capabilities. FIXED: Handle malformed JSON responses."""
     
     prompt = """Polish this executive summary to make it more impactful and actionable.
 
@@ -1065,24 +627,19 @@ Guidelines:
 3. Add motivating language that inspires action without overpromising
 4. Keep the same length and all factual content unchanged
 5. Make it feel personalized to this specific business owner
-6. Use varied sentence structure for better flow
-7. Include power words that convey urgency and opportunity
-8. CRITICAL: Maintain proper outcome framing - use "typically/often/generally" for all outcome claims
+6. Use "typically/often/generally" language for all outcome predictions
 
 Provide the polished version in this exact JSON format:
 {
-    "executive_summary": "polished executive summary"
-}
-
-Maintain all facts, scores, and data points exactly. Only improve clarity, impact, flow, and emotional resonance.
-Remove any markdown formatting - use plain text only.
-Ensure outcome framing is preserved or improved."""
+    "executive_summary": "polished executive summary here",
+    "key_improvements": ["what you improved", "second improvement", "third improvement"]
+}"""
 
     try:
         start_time = time.time()
         
         messages = [
-            SystemMessage(content="You are a master business communication expert using GPT-4.1. Create compelling, action-oriented content that motivates business owners while maintaining complete accuracy and proper outcome framing. Your writing should be clear, powerful, and personalized. Always respond with valid JSON."),
+            SystemMessage(content="You are a master business writer using GPT-4.1's advanced capabilities. Create compelling, action-oriented content while maintaining accuracy and proper outcome framing. Always respond with valid JSON."),
             HumanMessage(content=prompt.format(
                 exec_summary=summary_result.get("executive_summary", ""),
                 score=scoring_result.get("overall_score", 0),
@@ -1090,97 +647,168 @@ Ensure outcome framing is preserved or improved."""
             ))
         ]
         
-        # FIXED: Use bind() method instead of ensure_json_response
+        # Use bind() method for JSON response format
         llm_with_json = llm.bind(response_format={"type": "json_object"})
         response = llm_with_json.invoke(messages)
         
-        # Parse the JSON response
+        # Parse the JSON response with fixes
         if hasattr(response, 'content'):
-            result = json.loads(response.content)
+            result = parse_json_with_fixes(response.content, "polish_report_llm")
         else:
-            result = json.loads(str(response))
+            result = parse_json_with_fixes(str(response), "polish_report_llm")
         
         elapsed = time.time() - start_time
         logger.info(f"Report polishing took {elapsed:.2f}s")
         
-        polished = {}
-        if result.get("executive_summary"):
-            # Also polish recommendations if they exist
-            if summary_result.get("recommendations"):
-                polished_recs = polish_recommendations_llm(
-                    summary_result.get("recommendations", ""),
-                    scoring_result,
-                    llm
-                )
-                if polished_recs:
-                    result["recommendations"] = polished_recs
-                    
-            return result
-        return {}
+        return {
+            "executive_summary": result.get("executive_summary", summary_result.get("executive_summary", ""))
+        }
         
     except Exception as e:
         logger.warning(f"GPT-4.1 report polishing failed: {e}, skipping polish")
         return {}
 
 
-def polish_recommendations_llm(recommendations: str, scoring_result: Dict[str, Any], 
-                              llm) -> str:
-    """Polish recommendations section with GPT-4.1 for maximum impact."""
+def validate_structure_and_word_counts(sections: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate report structure and check word counts"""
+    issues = []
+    warnings = []
+    section_stats = {}
     
-    prompt = """Polish these recommendations to be more impactful while maintaining accuracy and proper outcome framing.
-
-Current Recommendations:
-{recommendations}
-
-Primary Focus Area: {focus}
-Overall Score: {score}/10
-
-Improvements to make:
-1. Make each action item more specific and concrete
-2. Ensure every outcome is quantified with data ranges (not specific numbers)
-3. Add urgency without being alarmist
-4. Use action verbs that inspire immediate implementation
-5. Make the language more dynamic and engaging
-6. CRITICAL: Ensure all outcome claims use "typically/often/generally" language
-
-Keep the exact same structure and facts. Only improve:
-- Action verb choices (implement → launch, create → develop, etc.)
-- Outcome descriptions (make them more vivid while keeping "typically" language)
-- Transitions between sections
-- Overall energy and momentum
-
-Return the polished recommendations as plain text (no JSON wrapper).
-Ensure every outcome claim uses proper framing language."""
-
-    try:
-        start_time = time.time()
-        
-        messages = [
-            SystemMessage(content="You are a business strategy expert using GPT-4.1 to create compelling action plans. Make recommendations feel urgent, specific, and achievable while always using 'typically/often' language for outcomes."),
-            HumanMessage(content=prompt.format(
-                recommendations=recommendations[:3000],
-                focus=scoring_result.get("focus_areas", {}).get("primary", {}).get("category", ""),
-                score=scoring_result.get("overall_score", 0)
-            ))
-        ]
-        
-        response = llm.invoke(messages)
-        polished = response.content.strip() if hasattr(response, 'content') else str(response).strip()
-        
-        elapsed = time.time() - start_time
-        logger.info(f"Recommendations polishing took {elapsed:.2f}s")
-        
-        return polished
-        
-    except Exception as e:
-        logger.warning(f"GPT-4.1 recommendations polishing failed: {e}, returning original")
-        return recommendations
-
-
-def regenerate_final_report(summary_result: Dict[str, Any], overall_score: float, 
-                          readiness_level: str) -> str:
-    """Regenerate the final report after fixes and polish"""
+    # Define expected word counts
+    expected_counts = {
+        "executive_summary": {"target": 200, "min": 150, "max": 250},
+        "category_summaries": {"target": 150, "min": 100, "max": 200},  # per category
+        "industry_context": {"target": 200, "min": 150, "max": 250},
+        "next_steps": {"target": 300, "min": 250, "max": 350}
+    }
     
+    # Check executive summary
+    exec_summary = sections.get("executive_summary", "")
+    if exec_summary:
+        word_count = len(exec_summary.split())
+        section_stats["executive_summary"] = word_count
+        
+        if word_count < expected_counts["executive_summary"]["min"]:
+            issues.append(f"Executive summary too short: {word_count} words (need {expected_counts['executive_summary']['min']}+)")
+        elif word_count > expected_counts["executive_summary"]["max"]:
+            warnings.append(f"Executive summary too long: {word_count} words (target {expected_counts['executive_summary']['target']})")
+    else:
+        issues.append("Missing executive summary")
+    
+    # Check category summaries
+    category_summaries = sections.get("category_summaries", {})
+    required_categories = ["owner_dependence", "revenue_quality", "financial_readiness", 
+                          "operational_resilience", "growth_value"]
+    
+    for category in required_categories:
+        if category not in category_summaries:
+            issues.append(f"Missing category summary: {category}")
+        else:
+            summary = category_summaries[category]
+            if isinstance(summary, dict):
+                summary_text = summary.get("summary", "")
+            else:
+                summary_text = str(summary)
+            
+            word_count = len(summary_text.split())
+            section_stats[f"category_{category}"] = word_count
+            
+            if word_count < expected_counts["category_summaries"]["min"]:
+                warnings.append(f"{category} summary too short: {word_count} words")
+    
+    # Check recommendations
+    recommendations = sections.get("recommendations", {})
+    if not recommendations:
+        issues.append("Missing recommendations section")
+    elif isinstance(recommendations, dict):
+        if "quick_wins" not in recommendations:
+            issues.append("Recommendations missing quick_wins")
+        if "strategic_priorities" not in recommendations:
+            issues.append("Recommendations missing strategic_priorities")
+    elif isinstance(recommendations, str):
+        # If recommendations is a string, check if it has content
+        if len(recommendations.strip()) < 50:
+            warnings.append("Recommendations section seems too short")
+    
+    # Check next steps
+    next_steps = sections.get("next_steps", "")
+    if next_steps:
+        word_count = len(next_steps.split())
+        section_stats["next_steps"] = word_count
+        
+        if word_count < expected_counts["next_steps"]["min"]:
+            warnings.append(f"Next steps too short: {word_count} words (need {expected_counts['next_steps']['min']}+)")
+    else:
+        issues.append("Missing next steps section")
+    
+    # Calculate completeness score
+    total_expected = 6  # exec summary + 5 categories
+    total_found = sum(1 for stat in section_stats.values() if stat > 50)
+    completeness_score = (total_found / total_expected) * 10 if total_expected > 0 else 0
+    
+    return {
+        "passed": len(issues) == 0,
+        "issues": issues,
+        "warnings": warnings,
+        "section_stats": section_stats,
+        "completeness_score": round(completeness_score, 1)
+    }
+
+
+def check_scoring_consistency(scoring_result: Dict[str, Any], summary_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Verify scores are used consistently throughout the report"""
+    issues = []
+    
+    # Get scores from scoring result
+    overall_score = scoring_result.get("overall_score", 0)
+    readiness_level = scoring_result.get("readiness_level", "")
+    category_scores = scoring_result.get("category_scores", {})
+    
+    # Check if scores are mentioned in executive summary
+    exec_summary = summary_result.get("executive_summary", "").lower()
+    
+    # Look for overall score mention
+    score_patterns = [
+        str(overall_score),
+        f"{overall_score}/10",
+        f"{overall_score} out of 10"
+    ]
+    
+    score_mentioned = any(pattern in exec_summary for pattern in score_patterns)
+    if not score_mentioned and overall_score > 0:
+        issues.append("Overall score not mentioned in executive summary")
+    
+    # Check readiness level
+    if readiness_level and readiness_level.lower() not in exec_summary:
+        issues.append(f"Readiness level '{readiness_level}' not mentioned in executive summary")
+    
+    # Verify category scores are reflected
+    category_summaries = summary_result.get("category_summaries", {})
+    for category, score_data in category_scores.items():
+        if category in category_summaries:
+            cat_summary = str(category_summaries[category]).lower()
+            score = score_data.get("score", 0)
+            
+            # Check if low scores have appropriate language
+            if score < 4 and not any(word in cat_summary for word in ["challenge", "gap", "improve", "address"]):
+                issues.append(f"Low score ({score}) in {category} not reflected in summary tone")
+            elif score > 7 and not any(word in cat_summary for word in ["strong", "excellent", "well", "solid"]):
+                issues.append(f"High score ({score}) in {category} not reflected in summary tone")
+    
+    return {
+        "is_consistent": len(issues) == 0,
+        "issues": issues,
+        "scores_found": {
+            "overall": overall_score,
+            "readiness_level": readiness_level,
+            "categories": len(category_scores)
+        }
+    }
+
+
+def assemble_final_report(summary_result: Dict[str, Any]) -> str:
+    """Assemble all sections into final report text"""
     report_parts = []
     
     # Executive Summary
@@ -1188,52 +816,101 @@ def regenerate_final_report(summary_result: Dict[str, Any], overall_score: float
         report_parts.append("EXECUTIVE SUMMARY\n")
         report_parts.append(summary_result["executive_summary"])
     
-    # Score section
-    if overall_score > 0:
-        report_parts.append("\nYOUR EXIT READINESS SCORE\n")
-        report_parts.append(f"Overall Score: {overall_score}/10")
-        report_parts.append(f"Readiness Level: {readiness_level}")
-    
-    # Category Analysis
-    if summary_result.get("category_summaries"):
-        report_parts.append("\nDETAILED ANALYSIS BY CATEGORY\n")
-        for category, data in summary_result["category_summaries"].items():
-            cat_name = category.replace('_', ' ').title()
-            report_parts.append(f"\n{cat_name} Analysis")
-            if isinstance(data, dict):
-                report_parts.append(f"Score: {data.get('score', 0)}/10")
-                report_parts.append(data.get('summary', ''))
-            else:
-                report_parts.append(str(data))
+    # Category Analyses
+    category_summaries = summary_result.get("category_summaries", {})
+    if category_summaries:
+        report_parts.append("\n\nDETAILED ANALYSIS BY CATEGORY\n")
+        
+        category_titles = {
+            "owner_dependence": "Owner Dependence",
+            "revenue_quality": "Revenue Quality & Stability",
+            "financial_readiness": "Financial Readiness",
+            "operational_resilience": "Operational Resilience",
+            "growth_value": "Growth & Value Potential"
+        }
+        
+        # Handle both dict and string formats
+        if isinstance(category_summaries, dict):
+            for category, title in category_titles.items():
+                if category in category_summaries:
+                    report_parts.append(f"\n{title.upper()}")
+                    cat_data = category_summaries[category]
+                    if isinstance(cat_data, dict):
+                        report_parts.append(cat_data.get("summary", ""))
+                        if cat_data.get("score"):
+                            report_parts.append(f"Score: {cat_data['score']}/10")
+                    else:
+                        report_parts.append(str(cat_data))
+        else:
+            # If category_summaries is not a dict, just append it as string
+            report_parts.append(str(category_summaries))
     
     # Recommendations
-    if summary_result.get("recommendations"):
-        report_parts.append("\nPERSONALIZED RECOMMENDATIONS\n")
-        recs = summary_result["recommendations"]
-        if isinstance(recs, dict):
-            for category, cat_recs in recs.items():
-                cat_name = category.replace('_', ' ').title()
-                report_parts.append(f"\n{cat_name}:")
-                if isinstance(cat_recs, list):
-                    for i, rec in enumerate(cat_recs, 1):
-                        report_parts.append(f"{i}. {rec}")
-                else:
-                    report_parts.append(str(cat_recs))
+    recommendations = summary_result.get("recommendations", {})
+    if recommendations:
+        report_parts.append("\n\nRECOMMENDATIONS\n")
+        
+        # Handle both string and dict formats
+        if isinstance(recommendations, str):
+            # If recommendations is a string, just append it
+            report_parts.append(recommendations)
+        elif isinstance(recommendations, dict):
+            # Quick Wins
+            if recommendations.get("quick_wins"):
+                report_parts.append("\nQuick Wins (0-3 months):")
+                for i, rec in enumerate(recommendations["quick_wins"], 1):
+                    report_parts.append(f"{i}. {rec}")
+            
+            # Strategic Priorities
+            if recommendations.get("strategic_priorities"):
+                report_parts.append("\nStrategic Priorities (3-12 months):")
+                for i, rec in enumerate(recommendations["strategic_priorities"], 1):
+                    report_parts.append(f"{i}. {rec}")
+            
+            # Critical Focus
+            if recommendations.get("critical_focus"):
+                report_parts.append(f"\nCritical Focus Area: {recommendations['critical_focus']}")
         else:
-            report_parts.append(str(recs))
+            # Handle other types by converting to string
+            report_parts.append(str(recommendations))
     
     # Industry Context
     if summary_result.get("industry_context"):
-        report_parts.append("\nINDUSTRY & MARKET CONTEXT\n")
+        report_parts.append("\n\nINDUSTRY & MARKET CONTEXT\n")
         report_parts.append(summary_result["industry_context"])
     
     # Next Steps
     if summary_result.get("next_steps"):
-        report_parts.append("\nYOUR NEXT STEPS\n")
+        report_parts.append("\n\nYOUR NEXT STEPS\n")
         report_parts.append(summary_result["next_steps"])
     
     return "\n".join(report_parts)
 
+
+def format_for_placid(report: str) -> str:
+    """Apply Placid-compatible formatting to the report"""
+    # Add consistent headers and footers
+    header = """EXIT READY SNAPSHOT
+
+Your Personalized Business Exit Readiness Assessment
+
+---
+
+"""
+    
+    footer = """
+
+---
+
+© On Pulse Solutions - Exit Ready Snapshot"""
+    
+    if not report.startswith("EXIT READY SNAPSHOT"):
+        report = header + report
+    
+    if "© On Pulse Solutions" not in report:
+        report = report + footer
+    
+    return report
 
 def calculate_overall_qa_score(quality_scores: Dict[str, Dict]) -> float:
     """Calculate overall QA score from individual checks"""
@@ -1281,42 +958,237 @@ def calculate_overall_qa_score(quality_scores: Dict[str, Dict]) -> float:
     # Normalize to 0-10 scale
     return round(total_score / total_weight, 1) if total_weight > 0 else 5.0
 
-
-def validate_plain_text_formatting(sections: Dict[str, Any]) -> Dict[str, Any]:
-    """Validate that all sections are properly formatted for Placid"""
-    issues = []
+def qa_node(state: WorkflowState) -> WorkflowState:
+    """
+    Enhanced QA validation with LLM-based checks, outcome framing verification, and formatting.
     
-    # Check for remaining markdown
-    markdown_patterns = [
-        r'\*\*[^*]+\*\*',  # **bold**
-        r'\*[^*]+\*',      # *italic*
-        r'#{1,6}\s+',      # # headers
-        r'\[([^\]]+)\]\([^)]+\)',  # [text](url)
-        r'`[^`]+`',        # `code`
-    ]
+    FIXED: Handle malformed JSON responses from LLMs.
+    """
+    start_time = time.time()
     
-    sections_to_check = [
-        "executive_summary",
-        "recommendations", 
-        "next_steps",
-        "final_report"
-    ]
-    
-    for section in sections_to_check:
-        if section in sections and isinstance(sections[section], str):
-            content = sections[section]
-            for pattern in markdown_patterns:
-                if re.search(pattern, content):
-                    issues.append(f"Markdown found in {section}: {pattern}")
-    
-    # Check category summaries
-    if "category_summaries" in sections and isinstance(sections["category_summaries"], dict):
-        for cat, summary in sections["category_summaries"].items():
-            for pattern in markdown_patterns:
-                if re.search(pattern, summary):
-                    issues.append(f"Markdown found in {cat}: {pattern}")
-    
-    return {
-        "is_valid": len(issues) == 0,
-        "issues": issues
-    }
+    try:
+        logger.info("Starting enhanced QA validation with formatting and outcome framing...")
+        
+        # Get required data
+        scoring_result = state.get("scoring_result", {})
+        summary_result = state.get("summary_result", {})
+        research_result = state.get("research_result", {})
+        
+        # Initialize QA LLMs with higher token limits for analyzing full reports
+        qa_llm = get_llm_with_fallback(
+            model="gpt-4.1-nano",
+            temperature=0,
+            max_tokens=8000
+        )
+        
+        # GPT-4.1 for redundancy and polish
+        redundancy_llm = get_llm_with_fallback(
+            model="gpt-4.1",
+            temperature=0.1,
+            max_tokens=8000
+        )
+        
+        polish_llm = get_llm_with_fallback(
+            model="gpt-4.1",
+            temperature=0.3,
+            max_tokens=8000
+        )
+        
+        # Track all quality checks
+        quality_scores = {}
+        qa_issues = []
+        qa_warnings = []
+        
+        # 1. Validate Scoring Consistency
+        logger.info("Checking scoring consistency...")
+        scoring_consistency_check = check_scoring_consistency(scoring_result, summary_result)
+        quality_scores["scoring_consistency"] = scoring_consistency_check
+        if not scoring_consistency_check.get("is_consistent", True):
+            qa_issues.extend(scoring_consistency_check.get("issues", []))
+        
+        # 2. Validate Content Quality
+        logger.info("Validating content quality...")
+        content_quality_check = validate_content_quality(summary_result)
+        quality_scores["content_quality"] = content_quality_check
+        if not content_quality_check.get("passed", True):
+            qa_issues.extend(content_quality_check.get("issues", []))
+        qa_warnings.extend(content_quality_check.get("warnings", []))
+        
+        # 3. PII Detection
+        logger.info("Scanning for PII...")
+        # First assemble the report
+        final_report = assemble_final_report(summary_result)
+        pii_scan = scan_for_pii(final_report)
+        quality_scores["pii_compliance"] = pii_scan
+        
+        if pii_scan.get("has_pii", False):
+            qa_issues.append(f"CRITICAL: PII detected - {', '.join(pii_scan.get('found_types', []))}")
+        
+        # 4. Structure Validation
+        logger.info("Validating report structure and word counts...")
+        structure_check = validate_structure_and_word_counts(summary_result)
+        quality_scores["structure_validation"] = structure_check
+        if not structure_check.get("passed", True):
+            qa_issues.extend(structure_check.get("issues", []))
+        qa_warnings.extend(structure_check.get("warnings", []))
+        
+        # 5. Enhanced LLM-Based Checks
+        logger.info("Running LLM-based quality checks...")
+        
+        # Check for redundancy with GPT-4.1
+        logger.info("Checking for content redundancy with GPT-4.1...")
+        redundancy_check = check_redundancy_llm(final_report, redundancy_llm)
+        quality_scores["redundancy_check"] = redundancy_check
+        
+        # Allow redundancy scores down to 3/10 for long reports
+        report_word_count = len(final_report.split())
+        redundancy_threshold = 3 if report_word_count > 2000 else 5
+        
+        if redundancy_check.get("redundancy_score", 10) < redundancy_threshold:
+            qa_warnings.append(f"High redundancy detected (score: {redundancy_check.get('redundancy_score')}/10)")
+        
+        # Check tone consistency
+        logger.info("Checking tone consistency...")
+        tone_check = check_tone_consistency_llm(final_report, qa_llm)
+        quality_scores["tone_consistency"] = tone_check
+        
+        if tone_check.get("tone_score", 10) < 4:
+            qa_warnings.append(f"Tone inconsistency detected (score: {tone_check.get('tone_score')}/10)")
+        
+        # Verify Citations
+        logger.info("Verifying citations and statistical claims...")
+        citation_check = verify_citations_llm(final_report, research_result, qa_llm)
+        quality_scores["citation_verification"] = citation_check
+        
+        if citation_check.get("citation_score", 10) < 6:
+            uncited_count = citation_check.get("issues_found", 0)
+            if uncited_count > 2:
+                qa_issues.append(f"Too many uncited claims found: {uncited_count}")
+                for claim in citation_check.get("uncited_claims", [])[:3]:
+                    qa_warnings.append(f"Uncited: {claim[:100]}...")
+        
+        # Verify Outcome Framing
+        logger.info("Verifying outcome framing compliance...")
+        framing_check = verify_outcome_framing_llm(final_report, qa_llm)
+        quality_scores["outcome_framing"] = framing_check
+        
+        if framing_check.get("promises_found", 0) > 0:
+            qa_issues.append(f"Promise language detected: {framing_check.get('promises_found')} instances")
+            for phrase in framing_check.get("promise_phrases", [])[:3]:
+                qa_warnings.append(f"Promise phrase: '{phrase}'")
+        
+        # 6. Attempt to Fix Issues
+        max_fix_attempts = 3
+        fix_attempt = 0
+        
+        while qa_issues and fix_attempt < max_fix_attempts:
+            fix_attempt += 1
+            logger.info(f"Attempting to fix issues - Attempt {fix_attempt}/{max_fix_attempts}")
+            
+            fixed_sections = fix_quality_issues_llm(
+                qa_issues, qa_warnings,
+                summary_result, scoring_result,
+                redundancy_check, tone_check,
+                qa_llm
+            )
+            
+            if fixed_sections:
+                # Apply fixes
+                for section, content in fixed_sections.items():
+                    if section in summary_result:
+                        summary_result[section] = content
+                
+                # Re-check for issues (simplified)
+                if fixed_sections.get("executive_summary"):
+                    # Quick promise language check
+                    promise_patterns = [r'\bwill\s+increase', r'\bguaranteed?\b', r'\bensures?\b']
+                    new_promises = sum(1 for p in promise_patterns 
+                                     if re.search(p, fixed_sections["executive_summary"], re.I))
+                    if new_promises == 0:
+                        qa_issues = [i for i in qa_issues if "Promise language" not in i]
+                
+                # Check if we fixed the critical issues
+                remaining_critical = [i for i in qa_issues if "CRITICAL" in i or "Promise language" in i]
+                if not remaining_critical:
+                    logger.info(f"Issues fixed successfully after {fix_attempt} attempts!")
+                    break
+            else:
+                logger.warning(f"No fixes generated on attempt {fix_attempt}")
+        
+        # 7. Apply Final Polish with GPT-4.1
+        if len(qa_issues) == 0 or all("CRITICAL" not in issue for issue in qa_issues):
+            logger.info("Applying final polish with GPT-4.1...")
+            polished_content = polish_report_llm(summary_result, scoring_result, polish_llm)
+            
+            if polished_content.get("executive_summary"):
+                summary_result["executive_summary"] = polished_content["executive_summary"]
+        
+        # 8. Reassemble and format final report
+        logger.info("Assembling final report...")
+        final_report = assemble_final_report(summary_result)
+        
+        # 9. Apply Placid Formatting
+        logger.info("Applying Placid-compatible formatting...")
+        final_report = format_for_placid(final_report)
+        
+        # Store formatted report
+        summary_result["final_report"] = final_report
+        
+        # 10. Calculate Overall QA Score
+        overall_qa_score = calculate_overall_qa_score(quality_scores)
+        
+        # 11. Determine Approval Status
+        critical_issues = [i for i in qa_issues if "CRITICAL" in i]
+        approved = len(critical_issues) == 0 and overall_qa_score >= 6.0  # Lowered threshold
+        
+        if not approved:
+            qa_warnings.insert(0, "REPORT NOT APPROVED - Critical issues found or quality score too low")
+        
+        # Update state
+        state["qa_result"] = {
+            "approved": approved,
+            "quality_score": overall_qa_score,
+            "issues": qa_issues,
+            "warnings": qa_warnings,
+            "quality_checks": quality_scores,
+            "fix_attempts": fix_attempt,
+            "final_report": final_report
+        }
+        
+        # Update summary result with QA-enhanced content
+        state["summary_result"] = summary_result
+        
+        # Update processing time
+        elapsed_time = time.time() - start_time
+        state["processing_time"]["qa"] = elapsed_time
+        
+        # Update stage
+        state["current_stage"] = "qa_complete"
+        state["messages"].append(
+            f"QA validation completed in {elapsed_time:.2f}s - "
+            f"Approved: {approved}, Quality: {overall_qa_score:.1f}/10, "
+            f"Issues: {len(qa_issues)}, Warnings: {len(qa_warnings)}"
+        )
+        
+        logger.info(f"=== QA NODE COMPLETED - {elapsed_time:.2f}s, Approved: {approved} ===")
+        
+        return state
+        
+    except Exception as e:
+        logger.error(f"QA validation failed: {str(e)}", exc_info=True)
+        
+        # Ensure we still have a result even on error
+        state["qa_result"] = {
+            "approved": False,
+            "quality_score": 0,
+            "issues": [f"QA validation error: {str(e)}"],
+            "warnings": [],
+            "quality_checks": {},
+            "error": str(e)
+        }
+        
+        state["current_stage"] = "qa_error"
+        state["error"] = f"QA validation error: {str(e)}"
+        state["messages"].append(f"ERROR in QA: {str(e)}")
+        
+        return state

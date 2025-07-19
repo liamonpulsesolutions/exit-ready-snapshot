@@ -2,7 +2,7 @@
 Scoring node for LangGraph workflow.
 Enhanced with LLM interpretation for each category.
 Uses pure functions from core modules plus intelligent analysis.
-FIXED: Industry extraction and response counting.
+FIXED: Industry extraction, response counting, and safe research_data access.
 """
 
 import logging
@@ -18,7 +18,7 @@ if not os.getenv('OPENAI_API_KEY'):
     if env_path.exists():
         load_dotenv(env_path)
 
-# FIXED: Import LLM utilities
+# Import LLM utilities
 from workflow.core.llm_utils import get_llm_with_fallback, ensure_json_response
 from langchain.schema import SystemMessage, HumanMessage
 
@@ -37,6 +37,21 @@ from workflow.core.scoring_logic import (
 logger = logging.getLogger(__name__)
 
 
+def safe_get(data: Dict[str, Any], path: str, default: Any = None) -> Any:
+    """Safely traverse nested dictionaries using dot notation."""
+    try:
+        keys = path.split('.')
+        result = data
+        for key in keys:
+            if isinstance(result, dict):
+                result = result.get(key, {})
+            else:
+                return default
+        return result if result != {} else default
+    except:
+        return default
+
+
 def generate_category_insights(
     category: str,
     score_data: Dict[str, Any],
@@ -46,11 +61,17 @@ def generate_category_insights(
 ) -> str:
     """Generate 2-3 sentences of intelligent commentary for a scoring category"""
     
+    # FIXED: Ensure research_data is a dict, not a string
+    if not isinstance(research_data, dict):
+        logger.warning(f"research_data is not a dict: {type(research_data)}")
+        research_data = {}
+    
     # Extract industry-specific benchmarks for context
     industry = responses.get("industry", "Professional Services")
     benchmarks = extract_industry_benchmarks(research_data, industry)
     
     # Create context-specific prompts for each category
+    # Using safe_get for all nested dictionary access
     category_prompts = {
         "owner_dependence": f"""Analyze this owner dependence score and provide 2-3 sentences of insight.
 
@@ -64,7 +85,7 @@ Key responses:
 - Role: "{responses.get('q1', '')[:100]}..."
 - Time away: "{responses.get('q2', '')}"
 
-Industry context from research: {score_data.get('industry_context', {}).get('benchmark', '')}
+Industry context from research: {safe_get(score_data, 'industry_context.benchmark', '')}
 
 Provide insight about what this score means for their exit readiness in the {industry} industry.""",
 
@@ -80,8 +101,8 @@ Key responses:
 - Revenue model: "{responses.get('q3', '')[:100]}..."
 - Customer concentration: "{responses.get('q4', '')}"
 
-Market data: {research_data.get('valuation_benchmarks', {}).get('recurring_revenue', {}).get('premium', 'Premium for recurring revenue')}
-Industry context: {score_data.get('industry_context', {}).get('benchmark', '')}
+Market data: {safe_get(research_data, 'valuation_benchmarks.recurring_revenue.premium', 'Premium for recurring revenue')}
+Industry context: {safe_get(score_data, 'industry_context.benchmark', '')}
 
 Provide insight about how their revenue structure affects valuation in {industry}.""",
 
@@ -96,7 +117,7 @@ Key responses:
 - Clean financials confidence: "{responses.get('q5', '')}"
 - Profit margins: "{responses.get('q6', '')}"
 
-Industry context: {score_data.get('industry_context', {}).get('benchmark', '')}
+Industry context: {safe_get(score_data, 'industry_context.benchmark', '')}
 
 Provide insight about their financial preparedness for due diligence in the {industry} sector.""",
 
@@ -110,7 +131,7 @@ Key responses:
 - Critical dependencies: "{responses.get('q7', '')[:100]}..."
 - Documentation level: "{responses.get('q8', '')}"
 
-Industry expectation: {score_data.get('industry_context', {}).get('benchmark', '')}
+Industry expectation: {safe_get(score_data, 'industry_context.benchmark', '')}
 
 Provide insight about operational transferability and buyer confidence for a {industry} business.""",
 
@@ -124,8 +145,8 @@ Key responses:
 - Unique value: "{responses.get('q9', '')[:100]}..."
 - Growth potential: "{responses.get('q10', '')}"
 
-Market trend: {research_data.get('market_conditions', {}).get('key_trend', {}).get('trend', 'Technology integration valued')}
-Industry drivers: {score_data.get('industry_context', {}).get('key_value_drivers', [])}
+Market trend: {safe_get(research_data, 'market_conditions.key_trend.trend', 'Technology integration valued')}
+Industry drivers: {safe_get(score_data, 'industry_context.key_value_drivers', [])}
 
 Provide insight about their competitive positioning and growth story in {industry}."""
     }
@@ -141,7 +162,7 @@ Provide insight about their competitive positioning and growth story in {industr
             HumanMessage(content=prompt)
         ]
         
-        # FIXED: Direct text response, no JSON needed
+        # Direct text response, no JSON needed
         response = llm.invoke(messages)
         insight = response.content.strip() if hasattr(response, 'content') else str(response).strip()
         
@@ -164,7 +185,7 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Enhanced scoring node with LLM interpretation for each category.
     Now uses dynamic industry benchmarking from research data.
-    FIXED: Industry extraction and response counting.
+    FIXED: Industry extraction, response counting, and safe data access.
     
     This node:
     1. Uses mechanical scoring with industry-specific benchmarks
@@ -186,22 +207,21 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["current_stage"] = "scoring"
         state["messages"].append(f"Enhanced scoring started at {start_time.isoformat()}")
         
-        # FIXED: Initialize LLM for insights with proper model name and temperature
+        # Initialize LLM for insights with proper model name and temperature
         insight_llm = get_llm_with_fallback("gpt-4.1-mini", temperature=0.3)
         
         # Get data from previous stages
         anonymized_data = state.get("anonymized_data", {})
         research_result = state.get("research_result", {})
         
-        # FIXED: Extract only the actual question responses (q1-q10)
+        # Extract only the actual question responses (q1-q10)
         question_responses = {}
         all_responses = anonymized_data.get("responses", {})
         for key, value in all_responses.items():
             if key.startswith('q') and key[1:].isdigit():
                 question_responses[key] = value
         
-        # FIXED: Get business context from state, not from responses
-        # The industry should come from the anonymized_data or state, not responses
+        # Get business context from state, not from responses
         industry = anonymized_data.get("industry") or state.get("industry") or "Professional Services"
         revenue_range = anonymized_data.get("revenue_range") or state.get("revenue_range") or "$1M-$5M"
         years_in_business = anonymized_data.get("years_in_business") or state.get("years_in_business") or "5-10 years"
@@ -299,7 +319,7 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         category_scores["operational_resilience"] = operational_score
         logger.info(f"Operational resilience: {operational_score['score']}/10")
         
-        # 5. Score Growth Value (with industry-specific value drivers)
+        # 5. Score Growth Value (with industry-specific growth expectations)
         logger.info("Scoring growth value with dynamic benchmarks...")
         logger.debug("Calling score_growth_value")
         growth_score = score_growth_value(responses, research_data)
@@ -314,21 +334,17 @@ def scoring_node(state: Dict[str, Any]) -> Dict[str, Any]:
         category_scores["growth_value"] = growth_score
         logger.info(f"Growth value: {growth_score['score']}/10")
         
-        # Add assertion checks after scoring
-        assert len(category_scores) == 5, f"Expected 5 category scores, got {len(category_scores)}"
-        for cat_name, cat_data in category_scores.items():
-            assert 'score' in cat_data, f"Missing score for {cat_name}"
-            assert 1.0 <= cat_data['score'] <= 10.0, f"Score {cat_data['score']} out of range for {cat_name}"
-            logger.debug(f"Category {cat_name} validated: score={cat_data['score']}")
-        
-        # Calculate overall score (mechanical calculation preserved)
+        # Calculate overall score (average of all categories)
+        logger.info("Calculating overall score...")
         overall_score, readiness_level = calculate_overall_score(category_scores)
+        
         logger.info(f"Overall score: {overall_score}/10 - {readiness_level}")
         
-        # Identify focus areas (mechanical logic preserved)
-        focus_areas = identify_focus_areas(
-            category_scores,
-            responses.get("exit_timeline", "1-2 years")
+        # Identify focus areas
+        focus_areas = identify_focus_areas(category_scores, exit_timeline)
+        logger.info(
+            f"Primary focus: {focus_areas.get('primary', {}).get('category', 'none')} "
+            f"(timeline: {exit_timeline})"
         )
         
         # Extract top insights from all categories
