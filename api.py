@@ -139,7 +139,7 @@ async def process_assessment(
     
     try:
         # Convert request to dictionary for workflow
-        form_data = request.dict()
+        form_data = request.model_dump()
         
         # Log the request data for debugging
         logger.debug(f"Form data: {json.dumps(form_data, indent=2)}")

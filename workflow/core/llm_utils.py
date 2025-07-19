@@ -47,7 +47,7 @@ def get_llm_with_fallback(
     if corrected_model != model:
         logger.info(f"Corrected model name from {model} to {corrected_model}")
     
-    # Create LLM with response format support
+    # Create LLM WITHOUT response format - let individual calls decide
     llm_kwargs = {
         "model": corrected_model,
         "temperature": temperature,
@@ -55,9 +55,8 @@ def get_llm_with_fallback(
         **kwargs
     }
     
-    # Add response_format for JSON if not streaming
-    if not kwargs.get("streaming", False):
-        llm_kwargs["model_kwargs"] = {"response_format": {"type": "json_object"}}
+    # REMOVED: automatic JSON response format
+    # This was causing issues for non-JSON requests
     
     try:
         llm = ChatOpenAI(**llm_kwargs)
@@ -215,6 +214,7 @@ def ensure_json_response(
 ) -> Dict[str, Any]:
     """
     Wrapper for LLM calls that ensures JSON output with retry logic.
+    FIXED: Only use JSON response format when actually requesting JSON.
     
     Args:
         llm: The LLM instance to use
@@ -238,8 +238,16 @@ def ensure_json_response(
         try:
             logger.debug(f"{function_name}: LLM call attempt {attempt + 1}/{retry_count}")
             
+            # Create a new LLM instance with JSON response format for this specific call
+            json_llm = ChatOpenAI(
+                model=llm.model_name,
+                temperature=llm.temperature,
+                max_tokens=llm.max_tokens,
+                model_kwargs={"response_format": {"type": "json_object"}}
+            )
+            
             # Make the LLM call
-            response = llm.invoke(messages)
+            response = json_llm.invoke(messages)
             
             # Extract content
             if hasattr(response, 'content'):
