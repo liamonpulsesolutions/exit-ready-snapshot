@@ -214,7 +214,7 @@ def ensure_json_response(
 ) -> Dict[str, Any]:
     """
     Wrapper for LLM calls that ensures JSON output with retry logic.
-    FIXED: Only use JSON response format when actually requesting JSON.
+    FIXED: Access model name correctly from ChatOpenAI instance.
     
     Args:
         llm: The LLM instance to use
@@ -238,9 +238,13 @@ def ensure_json_response(
         try:
             logger.debug(f"{function_name}: LLM call attempt {attempt + 1}/{retry_count}")
             
+            # FIXED: Access the model name correctly
+            # ChatOpenAI from langchain_openai stores it as 'model'
+            model_name = llm.model
+            
             # Create a new LLM instance with JSON response format for this specific call
             json_llm = ChatOpenAI(
-                model=llm.model_name,
+                model=model_name,
                 temperature=llm.temperature,
                 max_tokens=llm.max_tokens,
                 model_kwargs={"response_format": {"type": "json_object"}}
