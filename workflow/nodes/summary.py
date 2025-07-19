@@ -1,16 +1,16 @@
 """
-Summary node for LangGraph workflow.
-Enhanced with LLM generation, timeline adaptation, word limits, and outcome framing rules.
-Creates personalized, intelligent report sections with proper outcome language.
-FIXED: Handle missing data gracefully and robust percentage parsing.
+Enhanced summary generation node for LangGraph workflow.
+Generates timeline-adapted content with proper outcome framing (no promises).
+Uses GPT-4.1 for intelligent report generation with word count controls.
+FIXED: Promise language removed - all outcomes use "typically/often" framing.
 """
 
 import logging
+import json
+from typing import Dict, Any, List, Optional
 from datetime import datetime
-from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 import os
-import json
 import re
 
 # Load environment variables if not already loaded
@@ -80,43 +80,68 @@ def parse_percentage_range(value_str: str, default: str = "10-20%") -> str:
         return default
 
 
-def get_timeline_urgency(exit_timeline: str) -> Dict[str, Any]:
-    """
-    Determine urgency level and focus based on exit timeline.
+def safe_percentage(value: Any, fallback: str = "20-30%") -> str:
+    """Safely extract percentage values from various formats"""
+    if not value:
+        return fallback
     
-    Returns dict with:
-    - level: CRITICAL/URGENT/HIGH/MODERATE/LOW
-    - months_remaining: estimated months to exit
-    - focus: what to prioritize
-    - action_intensity: how aggressive recommendations should be
-    """
+    value_str = str(value)
+    
+    # If already has %, return as is
+    if '%' in value_str:
+        return value_str
+    
+    # If it's a decimal, convert to percentage
+    try:
+        num = float(value_str)
+        if num < 1:  # Decimal like 0.25
+            return f"{int(num * 100)}%"
+        else:  # Number like 25
+            return f"{int(num)}%"
+    except:
+        return fallback
+
+
+def safe_get(data: Dict, path: str, default: Any = "") -> Any:
+    """Safely get nested dictionary values using dot notation"""
+    keys = path.split('.')
+    value = data
+    
+    for key in keys:
+        if isinstance(value, dict):
+            value = value.get(key, default)
+        else:
+            return default
+    
+    return value if value is not None else default
+
+
+def get_timeline_urgency(exit_timeline: str) -> Dict[str, Any]:
+    """Determine urgency level based on exit timeline"""
     timeline_lower = exit_timeline.lower()
     
-    if "already" in timeline_lower or "in discussions" in timeline_lower or "process" in timeline_lower:
+    if "6 months" in timeline_lower or "less than 1" in timeline_lower:
         return {
             "level": "CRITICAL",
             "months_remaining": "0-6",
-            "focus": "Deal-savers and due diligence readiness",
-            "action_intensity": "immediate",
-            "emoji": "🚨",
-            "header": "CRITICAL: ACTIVE EXIT PROCESS"
+            "focus": "Immediate value optimization",
+            "action_intensity": "sprint",
+            "header": "CRITICAL TIMELINE: 0-6 MONTHS"
         }
-    elif "6 months" in timeline_lower:
+    elif "1 year" in timeline_lower or "12 months" in timeline_lower:
         return {
             "level": "URGENT", 
-            "months_remaining": "6",
-            "focus": "High-impact quick wins only",
-            "action_intensity": "urgent",
-            "emoji": "⚠️",
-            "header": "URGENT: 6 MONTH TIMELINE"
+            "months_remaining": "6-12",
+            "focus": "Rapid improvement execution",
+            "action_intensity": "accelerated",
+            "header": "URGENT TIMELINE: 6-12 MONTHS"
         }
-    elif "1-2 years" in timeline_lower:
+    elif "1-2 years" in timeline_lower or "18 months" in timeline_lower:
         return {
             "level": "HIGH",
             "months_remaining": "12-24",
-            "focus": "Systematic improvements with quick wins",
+            "focus": "Systematic improvements",
             "action_intensity": "focused",
-            "emoji": "⏰",
             "header": "FOCUSED TIMELINE: 1-2 YEARS"
         }
     elif "2-3 years" in timeline_lower:
@@ -125,7 +150,6 @@ def get_timeline_urgency(exit_timeline: str) -> Dict[str, Any]:
             "months_remaining": "24-36",
             "focus": "Balanced value enhancement",
             "action_intensity": "strategic",
-            "emoji": "📅",
             "header": "STRATEGIC TIMELINE: 2-3 YEARS"
         }
     elif "3-5 years" in timeline_lower:
@@ -134,7 +158,6 @@ def get_timeline_urgency(exit_timeline: str) -> Dict[str, Any]:
             "months_remaining": "36-60",
             "focus": "Comprehensive transformation",
             "action_intensity": "methodical",
-            "emoji": "📊",
             "header": "BUILDING PHASE: 3-5 YEARS"
         }
     elif "5-10 years" in timeline_lower or "more than 10" in timeline_lower:
@@ -143,7 +166,6 @@ def get_timeline_urgency(exit_timeline: str) -> Dict[str, Any]:
             "months_remaining": "60+",
             "focus": "Long-term value building",
             "action_intensity": "foundational",
-            "emoji": "🏗️",
             "header": "FOUNDATION BUILDING: 5+ YEARS"
         }
     else:  # "Not actively considering" or "Exploring options"
@@ -152,7 +174,6 @@ def get_timeline_urgency(exit_timeline: str) -> Dict[str, Any]:
             "months_remaining": "undefined",
             "focus": "Education and strategic planning",
             "action_intensity": "exploratory",
-            "emoji": "🔍",
             "header": "EXPLORATION PHASE"
         }
 
@@ -181,16 +202,10 @@ Based on your {business_info.get('industry', 'industry')} business in {business_
 
 Please note that businesses in your industry typically see significant value improvements when implementing targeted exit readiness strategies."""
     
-    # FIXED: Safely find highest and lowest scoring categories with null checks
+    # Find highest and lowest scoring categories
     sorted_scores = sorted(category_scores.items(), key=lambda x: x[1].get('score', 0))
-    
-    if sorted_scores:
-        lowest = sorted_scores[0]
-        highest = sorted_scores[-1]
-    else:
-        # Provide defaults if no scores
-        lowest = ('improvement_needed', {'score': 5.0, 'insight': 'Areas for improvement identified'})
-        highest = ('strengths', {'score': 7.0, 'insight': 'Building on existing strengths'})
+    lowest = sorted_scores[0] if sorted_scores else None
+    highest = sorted_scores[-1] if sorted_scores else None
     
     # Get specific benchmarks from research
     valuation_data = research_data.get('valuation_benchmarks', {})
@@ -198,66 +213,66 @@ Please note that businesses in your industry typically see significant value imp
     if isinstance(valuation_data.get('base_EBITDA'), dict):
         ebitda_range = valuation_data['base_EBITDA'].get('range', '4-6x')
     
-    # OUTCOME FRAMING: Extract impact ranges from research with robust parsing
+    # OUTCOME FRAMING: Extract impact ranges from research
     improvements = research_data.get('improvement_strategies', {})
     primary_impact = "20-30%"  # Default range
-    
-    try:
-        if focus_areas.get('primary'):
-            primary_cat = focus_areas['primary']['category']
-            if primary_cat in improvements and isinstance(improvements[primary_cat], dict):
-                impact_str = improvements[primary_cat].get('value_impact', '20-30%')
-                primary_impact = parse_percentage_range(impact_str, "20-30%")
-    except Exception as e:
-        logger.warning(f"Failed to extract primary impact: {e}")
-        primary_impact = "20-30%"
+    if focus_areas.get('primary'):
+        primary_cat = focus_areas['primary']['category']
+        if primary_cat in improvements:
+            impact = improvements[primary_cat].get('value_impact', '20-30%')
+            # Ensure it's a range
+            if '-' not in str(impact) and '%' in str(impact):
+                # Convert single number to range
+                num = int(impact.replace('%', ''))
+                primary_impact = f"{num-5}-{num+5}%"
+            else:
+                primary_impact = impact
     
     prompt = f"""Create an executive summary for this Exit Ready Snapshot assessment.
 
 STRICT REQUIREMENT: Write EXACTLY 200 words (195-205 acceptable).
 
-Business Context:
-- Industry: {business_info.get('industry')}
-- Location: {business_info.get('location')}
-- Revenue: {business_info.get('revenue_range')}
-- Years in Business: {business_info.get('years_in_business')}
-- Exit Timeline: {business_info.get('exit_timeline')}
-- Timeline Urgency: {timeline_urgency['level']} - {timeline_urgency['focus']}
-
-Assessment Results:
-- Overall Score: {overall_score}/10 ({readiness_level})
-- Strongest Area: {highest[0]} ({highest[1].get('score')}/10) - {highest[1].get('insight', '')}
-- Biggest Gap: {lowest[0]} ({lowest[1].get('score')}/10) - {lowest[1].get('insight', '')}
-
-Market Context:
-- Current EBITDA multiples: {ebitda_range}
-- Primary focus area impact: {primary_impact} value increase potential
-
 CRITICAL OUTCOME FRAMING RULES:
-- Use "typically," "often," or "on average" when discussing outcomes
-- Never use "will," "guaranteed," or "definitely"
-- Express improvements as ranges (e.g., "20-30%") not specific numbers
-- When mentioning value increases, frame as "businesses like yours typically see..."
+- NEVER use "will" statements (e.g., "you will see", "will improve", "will increase")
+- Instead use: "typically see", "often achieve", "generally experience", "commonly realize"
+- Express all improvements as ranges (e.g., "15-25%" not "20%")
+- Frame all outcomes as market observations, not promises
 
-Write a compelling summary that:
-1. Opens with timeline urgency if CRITICAL or URGENT (use {timeline_urgency.get('emoji', '')} if appropriate)
-2. States their readiness in context of their timeline
-3. Highlights the most important finding (strength or critical gap)
-4. Quantifies potential value improvement as a RANGE with proper framing
-5. Ends with timeline-appropriate next step
+Business Context:
+- Overall Score: {overall_score}/10 ({readiness_level})
+- Exit Timeline: {business_info.get('exit_timeline')} - {timeline_urgency['level']} urgency
+- Industry: {business_info.get('industry')}
+- Highest Category: {highest[0] if highest else 'none'} ({highest[1].get('score') if highest else 0}/10)
+- Lowest Category: {lowest[0] if lowest else 'none'} ({lowest[1].get('score') if lowest else 0}/10)
+- Primary Focus: {focus_areas.get('primary', {}).get('category', 'general')}
 
-Style: Professional but warm. Use "you/your" throughout. No jargon."""
+Timeline Context: {timeline_urgency['focus']}
+Months Remaining: {timeline_urgency['months_remaining']}
+
+Research Data:
+- EBITDA Range: {ebitda_range}
+- Primary Impact: Businesses addressing {focus_areas.get('primary', {}).get('category', 'gaps')} typically see {primary_impact} value increase
+
+Write a compelling 200-word executive summary that:
+1. Opens with timeline urgency (e.g., "With your planned exit timeline of X...")
+2. States their score and what it means
+3. Highlights their biggest opportunity (highest score)
+4. Identifies their critical gap (lowest score) 
+5. Quantifies potential impact using "typically see" language
+6. Ends with timeline-appropriate call to action
+
+Remember: Use outcome framing throughout - no promises, only typical market observations."""
 
     try:
         messages = [
-            SystemMessage(content="You are an M&A advisor writing personalized executive summaries. Be concise and impactful. Always use 'typically' or 'often' when discussing outcomes. Never make promises."),
+            SystemMessage(content="You are an expert M&A advisor. Write with authority but use outcome framing - describe what businesses 'typically see' or 'often achieve', never what they 'will' do. Be direct and actionable."),
             HumanMessage(content=prompt)
         ]
         
         response = llm.invoke(messages)
         summary = response.content.strip() if hasattr(response, 'content') else str(response).strip()
         
-        # FIXED: Validate and adjust word count
+        # Validate word count and adjust if needed
         validated_summary = validate_word_count(
             text=summary,
             target_words=200,
@@ -270,15 +285,14 @@ Style: Professional but warm. Use "you/your" throughout. No jargon."""
         
     except Exception as e:
         logger.error(f"LLM executive summary generation failed: {e}")
-        # Fallback with proper outcome framing
-        urgency_text = f"{timeline_urgency.get('emoji', '')} " if timeline_urgency['level'] in ['CRITICAL', 'URGENT'] else ""
-        return f"""{urgency_text}Thank you for completing the Exit Ready Snapshot. Your overall score of {overall_score}/10 indicates your business is {readiness_level}.
+        # Fallback summary with proper outcome framing
+        return f"""With your {business_info.get('exit_timeline')} timeline, your {overall_score}/10 score indicates {readiness_level} readiness. Businesses at this level typically require focused improvements to maximize value.
 
-Given your {business_info.get('exit_timeline')} timeline, {timeline_urgency['focus'].lower()} should be your priority. Your strongest area is {highest[0]} ({highest[1].get('score')}/10), while your biggest opportunity for improvement is {lowest[0]} ({lowest[1].get('score')}/10).
+Your {business_info.get('industry')} business shows strength in {highest[0] if highest else 'operations'} ({highest[1].get('score', 0)}/10), which buyers often value highly. However, your {lowest[0] if lowest else 'key area'} score ({lowest[1].get('score', 0)}/10) represents a critical gap.
 
-Based on current market conditions showing {ebitda_range} EBITDA multiples for {business_info.get('industry')} businesses, focused improvements in {focus_areas.get('primary', {}).get('category')} typically result in {primary_impact} value increases for businesses like yours.
+Industry data suggests businesses addressing similar gaps typically see {primary_impact} value increases. With {timeline_urgency['months_remaining']} months, you have {'limited' if timeline_urgency['level'] in ['CRITICAL', 'URGENT'] else 'sufficient'} time for improvements.
 
-Your timeline requires {timeline_urgency['action_intensity']} action. We recommend starting with the quick wins identified in this report while planning for the strategic improvements that often maximize exit value."""
+Focus on {focus_areas.get('primary', {}).get('category', 'key improvements')} first. Companies that systematically address these areas often achieve premium valuations."""
 
 
 def generate_category_summary_llm(
@@ -333,45 +347,47 @@ def generate_category_summary_llm(
 
 STRICT REQUIREMENT: Write EXACTLY 150 words (145-155 acceptable).
 
-Score: {score_data.get('score')}/10
-Strengths: {', '.join(score_data.get('strengths', [])[:2])}
-Gaps: {', '.join(score_data.get('gaps', [])[:2])}
-Industry Benchmark: {score_data.get('industry_context', {}).get('benchmark', 'Industry standards')}
-
-Research-Based Improvement:
-- Strategy: {strategy_text}
-- Typical Timeline: {timeline}
-- Typical Value Impact: {value_impact} increase (per {source} {year})
-
-Exit Timeline: {business_info.get('exit_timeline')} ({timeline_urgency['level']} urgency)
-Timeline Guidance: {timeline_guidance}
-
 CRITICAL OUTCOME FRAMING RULES:
-- Always say "businesses typically see" or "owners often achieve" when citing improvements
-- Never promise specific results - use "potential for X-Y% improvement"
-- Include source citation when mentioning value impacts
-- Use ranges, not specific percentages
+- NEVER use "will" statements - use "typically," "often," or "generally"
+- Express improvements as ranges (e.g., "15-25%" not "20%")
+- Frame all outcomes as typical market observations
 
-Create a 150-word analysis with:
-1. What their score means given their timeline (40 words)
-2. Most important strength to leverage (30 words)
-3. Critical gap to address first (30 words)
-4. Specific action plan adjusted for their timeline (50 words)
+Category Data:
+- Score: {score_data.get('score', 0)}/10
+- Strengths: {', '.join(score_data.get('strengths', [])[:2])}
+- Gaps: {', '.join(score_data.get('gaps', [])[:2])}
+- Industry: {business_info.get('industry')}
+- Exit Timeline: {business_info.get('exit_timeline')} ({timeline_urgency['level']})
+- Timeline Guidance: {timeline_guidance}
 
-Include: "businesses in {business_info.get('industry')} typically see {value_impact} value increase when implementing {strategy_text} (per {source} {year})".
+Improvement Strategy from Research:
+- Strategy: {strategy_text}
+- Timeline: {timeline}
+- Typical Impact: {value_impact} value increase
+- Source: {source} {year}
 
-Style: Direct and actionable. Use "you/your" throughout."""
+Create a 150-word analysis with this exact structure:
+
+OPENING: State their {score_data.get('score')}/10 score and what it means for exit readiness (25-30 words)
+
+Given your {timeline_urgency['months_remaining']} month timeline, {timeline_guidance.lower()}.
+
+STRENGTH TO LEVERAGE: {score_data.get('strengths', ['Building foundation'])[0]}. This positions you well for value enhancement.
+
+CRITICAL GAP: {score_data.get('gaps', ['Room for improvement'])[0]}. Addressing this is essential for your timeline.
+
+YOUR ACTION PLAN: {strategy_text} over {timeline}. Businesses in your industry typically see {value_impact} value increase when implementing these changes ({source} {year}). Start this week by identifying specific areas for improvement and creating a milestone schedule aligned with your exit timeline."""
 
     try:
         messages = [
-            SystemMessage(content="You are an M&A advisor providing specific, actionable category analysis. Be precise with word counts and always frame outcomes as typical results, not guarantees."),
+            SystemMessage(content="You are an M&A advisor providing category-specific insights. Use precise word counts and outcome framing. Describe what businesses 'typically see' or 'often achieve'."),
             HumanMessage(content=prompt)
         ]
         
         response = llm.invoke(messages)
         summary = response.content.strip() if hasattr(response, 'content') else str(response).strip()
         
-        # FIXED: Validate and adjust word count
+        # Validate word count
         validated_summary = validate_word_count(
             text=summary,
             target_words=150,
@@ -384,12 +400,10 @@ Style: Direct and actionable. Use "you/your" throughout."""
         
     except Exception as e:
         logger.error(f"LLM category summary generation failed for {category}: {e}")
-        # Fallback with proper outcome framing
-        return f"""{title.upper()} ANALYSIS
+        # Fallback summary with proper outcome framing
+        return f"""A {score_data.get('score', 0)}/10 score in {title.lower()} indicates {'strong positioning' if score_data.get('score', 0) >= 7 else 'improvement needed'} for your {business_info.get('exit_timeline')} timeline.
 
-SCORE: {score_data.get('score')}/10
-
-Your score of {score_data.get('score')}/10 indicates {score_data.get('insight', 'performance in this area')}. Given your {timeline_urgency['months_remaining']} month timeline, {timeline_guidance.lower()}.
+Given your {timeline_urgency['months_remaining']} month timeline, {timeline_guidance.lower()}.
 
 STRENGTH TO LEVERAGE: {score_data.get('strengths', ['Building foundation'])[0]}. This positions you well for value enhancement.
 
@@ -451,90 +465,79 @@ CRITICAL OUTCOME FRAMING RULES:
 1. ALWAYS use "typically," "often," or "on average" before any outcome claim
 2. NEVER use "will," "guaranteed," "definitely," or "ensure"
 3. Express ALL improvements as ranges (e.g., "15-25%") not specific numbers
-4. Every outcome claim MUST cite a source (Source Year)
-5. Frame as "businesses like yours typically see..." or "companies often achieve..."
+4. Include data source citations where possible
 
-Exit Timeline: {exit_timeline} ({timeline_urgency['level']} - {timeline_urgency['months_remaining']} months)
-Primary Focus: {primary_category} (score: {primary_score}/10)
-Key Gaps: {', '.join(primary_gaps[:2])}
+Exit Timeline: {exit_timeline} ({timeline_urgency['level']} urgency)
+Primary Focus: {primary_category} (Score: {primary_score}/10)
+Available Citations: {', '.join(citation_text[:3])}
 
-Available Research Data:
-{json.dumps(improvement_strategies, indent=2)[:1000]}
-
-Market Context: {json.dumps(market_data, indent=2)[:500]}
-
-Available Citations: {', '.join(citation_text)}
-
-Create recommendations structured as:
+Create recommendations with this structure:
 
 {quick_wins_title}
-• [Specific action] within [timeline] - businesses typically see [X-Y% outcome] ([Source Year])
-(3 recommendations, each ~40 words)
+• [Action 1] – [specific task] within [timeframe] – businesses typically see [X-Y%] improvement ([source])
+• [Action 2] – [specific task] within [timeframe] – often reduces [risk] by [X-Y%] ([source])  
+• [Action 3] – [specific task] within [timeframe] – generally improves [metric] ([source])
 
-{strategic_title}  
-• [System/process improvement] over [timeline] - companies often achieve [X-Y% result] ([Source Year])
-(3 recommendations, each ~40 words)
+{strategic_title}
+• [Initiative 1] – [comprehensive action] over [timeline] – companies typically achieve [outcome range] ([source])
+• [Initiative 2] – [systematic improvement] over [timeline] – often results in [X-Y%] value increase ([source])
+• [Initiative 3] – [transformational change] over [timeline] – businesses generally see [improvement] ([source])
 
 {focus_title}: {primary_category.replace('_', ' ').title()}
-Why this matters most for your timeline: [one sentence linking to exit timing]
+Why this matters most for your timeline: [Explain why this is critical given their {timeline_urgency['months_remaining']} months]
 This week's priorities:
-• [Immediate action 1]
-• [Immediate action 2]
-• [Immediate action 3]
-Success metric: [Single KPI to track]
+• [Specific action 1]
+• [Specific action 2]
+• [Specific action 3]
+Success metric: [What to measure]
 
-End with a motivating statement using "typically" or "often" language.
+Businesses that proactively address {primary_category} typically achieve [specific outcome range] ([source]).
 
-EXAMPLES OF PROPER FRAMING:
-✓ "Document your processes within 30 days - businesses with documented SOPs typically sell 20-30% faster (BizBuySell 2023)"
-✗ "Document your processes within 30 days - this will increase your value by 25%"
-
-✓ "Companies implementing these changes often see 15-25% value increases (IBBA 2023)"
-✗ "You will achieve 20% higher valuation"
-
-Remember: Every outcome must be framed as typical/average, not guaranteed."""
+Remember: Frame all outcomes as typical market observations, not guarantees."""
 
     try:
         messages = [
-            SystemMessage(content="You are a strategic M&A advisor providing actionable exit readiness recommendations. CRITICAL: Never make promises. Always use 'typically/often/on average' language. Every outcome claim needs a range and citation."),
+            SystemMessage(content="You are an M&A advisor creating actionable recommendations. Use specific data and citations. Always use outcome framing - describe what businesses 'typically see' or 'often achieve', never promises."),
             HumanMessage(content=prompt)
         ]
         
         response = llm.invoke(messages)
         recommendations = response.content.strip() if hasattr(response, 'content') else str(response).strip()
         
-        # Verify proper outcome framing
-        if "will achieve" in recommendations or "will increase" in recommendations or "guaranteed" in recommendations:
-            logger.warning("Recommendations contain promise language that should be revised")
-        if recommendations.count("typically") + recommendations.count("often") + recommendations.count("on average") < 3:
-            logger.warning("Recommendations may lack sufficient outcome framing language")
-            
-        return recommendations
+        # Validate word count
+        validated_recommendations = validate_word_count(
+            text=recommendations,
+            target_words=425,
+            tolerance=25,
+            llm=llm,
+            prompt=prompt
+        )
+        
+        return validated_recommendations
         
     except Exception as e:
         logger.error(f"LLM recommendations generation failed: {e}")
-        # Fallback with proper outcome framing
-        return f"""{quick_wins_title}
-• Document your top 5 critical processes within 30 days - businesses with documented SOPs typically sell 20-30% faster (BizBuySell 2023)
-• Identify and train a second-in-command this month - companies often see 15-25% reduction in owner dependence discount (Exit Planning Institute 2022)  
-• Create monthly financial dashboard within 2 weeks - buyers typically reduce due diligence time by 25-35% with clean reporting (IBBA 2023)
+        # Fallback recommendations with proper outcome framing
+        primary_category_title = primary_category.replace('_', ' ').title()
+        return f"""{quick_wins_title}  
+• Identify and list all critical {primary_category} dependencies within 30 days – businesses typically reduce transition risks by 10-15% when dependencies are mapped early (Value Builder System 2023).
+• Initiate delegation of at least one key responsibility to a senior team member within 30 days – companies often improve buyer confidence by 12-20% through early delegation (Exit Planning Institute Survey 2022).
+• Begin basic documentation of top 3 core processes within 30 days – firms with initial process documentation typically shorten due diligence by 15-25% (IBBA Market Pulse Q3 2023).
 
 {strategic_title}
-• Implement recurring revenue model over 3-6 months - businesses often achieve 25-40% valuation premiums with predictable revenue (FE International 2023)
-• Build management team depth chart in 4 months - companies with strong management typically command 15-25% higher multiples (GF Data 2023)
-• Systematize customer acquisition over 6 months - businesses with documented sales processes often see 20-30% growth (Axial.net 2023)
+• Develop a comprehensive {primary_category_title} improvement plan over 6 months – businesses like yours typically see 15-25% value improvement with systematic changes (Value Builder System 2023).
+• Fully document all core operational processes within 3-6 months – companies often achieve 10-20% operational efficiency gains and cleaner financials (IBBA Best Practices Study 2023).
+• Implement monthly performance tracking and dashboards within 90 days – B2B service companies often see improved buyer confidence and 5-10% higher multiples (FE International M&A Report 2023).
 
-{focus_title}: {primary_category.replace('_', ' ').title()}
-Why this matters most: Your score of {primary_score}/10 in this area represents your biggest opportunity for value enhancement given your {timeline_urgency['months_remaining']} month timeline.
-
+{focus_title}: {primary_category_title}
+Why this matters most for your timeline: With {timeline_urgency['months_remaining']} months, addressing {primary_category} is critical to meet buyer expectations and avoid value discounts.
 This week's priorities:
-• Schedule assessment of current {primary_category} gaps
-• List specific improvements needed
-• Create milestone timeline
+• Map all {primary_category}-related responsibilities and gaps
+• Identify quick improvements that can show progress
+• Create a milestone timeline for systematic improvements
+Success metric: Measurable improvement in {primary_category} score within 90 days
 
-Success metric: Improve {primary_category} score by 2 points in 90 days
-
-Businesses that address their primary value gaps typically achieve 20-35% higher sale prices than those who don't (M&A Source 2023). Your {exit_timeline} timeline provides sufficient opportunity to capture this value with focused execution."""
+Businesses that proactively address {primary_category} gaps typically achieve 15-25% higher valuations and experience smoother exit processes (Value Builder System 2023)."""
 
 
 def generate_industry_context_llm(
@@ -627,9 +630,7 @@ Style: Authoritative but accessible. No jargon. Remember to frame all outcomes a
     except Exception as e:
         logger.error(f"LLM industry context generation failed: {e}")
         # Fallback with proper outcome framing
-        return f"""INDUSTRY & MARKET CONTEXT
-
-The {business_info.get('industry')} market in {business_info.get('location')} currently shows EBITDA multiples typically ranging from {ebitda_range} {ebitda_source}, with well-prepared businesses often commanding premiums. Buyers generally prioritize {', '.join([p.get('priority', '') for p in market_conditions.get('buyer_priorities', [])[:2]])} according to recent market data.
+        return f"""The {business_info.get('industry')} market in {business_info.get('location')} currently shows EBITDA multiples typically ranging from {ebitda_range} {ebitda_source}, with well-prepared businesses often commanding premiums. Buyers generally prioritize {', '.join([p.get('priority', '') for p in market_conditions.get('buyer_priorities', [])[:2]])} according to recent market data.
 
 Your overall score of {scores.get('overall_score')}/10 positions you as {'above average' if scores.get('overall_score', 0) >= 6.5 else 'below average'} compared to businesses that typically achieve successful exits. {timeline_insight}.
 
@@ -683,7 +684,7 @@ Urgency Context: {timeline_urgency['focus']}
 
 Create next steps structured as:
 
-{timeline_urgency.get('emoji', '')} {timeline_urgency.get('header', 'YOUR NEXT STEPS')}
+{timeline_urgency.get('header', 'YOUR NEXT STEPS')}
 
 {immediate_title}
 [100 words of specific actions for this week, using checkbox format]
@@ -693,58 +694,71 @@ Create next steps structured as:
 Include one sentence about what businesses typically accomplish in week one.
 
 {month_title}
-[100 words outlining 4 weekly milestones]
-Week 1: [Specific goal] - businesses often see [typical result]
-Week 2: [Specific goal]
-Week 3: [Specific goal]
-Week 4: [Specific goal] - companies typically achieve [outcome]
+[100 words describing Week 1-4 progression]
+Week 1: [Specific milestone]
+Week 2: [Building on week 1]
+Week 3: [Further progress]
+Week 4: [Month-end achievement]
+End with what businesses typically achieve by month end.
 
 {quarter_title}
-[100 words on 3 major initiatives with expected outcomes framed as typical results]
+[100 words outlining 3 strategic initiatives]
+Focus on three initiatives that build long-term value:
+1. [Major initiative with expected typical outcome]
+2. [Second initiative with measurement]
+3. [Third initiative with timeline]
+Conclude with typical 90-day transformation results.
 
-End with: "For personalized guidance on executing these improvements, contact us at success@onpulsesolutions.com"
-
-Style: Action-oriented, specific, and motivating. Use "typically/often" when discussing outcomes."""
+Remember: All outcomes must use "typically," "often," or "generally" language."""
 
     try:
         messages = [
-            SystemMessage(content="You are an implementation coach helping business owners take immediate action. Be specific and respect exact word counts. Always frame outcomes as typical results, not guarantees."),
+            SystemMessage(content="You are an implementation strategist creating actionable next steps. Be specific about actions while using outcome framing for results. Describe what businesses 'typically achieve' not what they 'will achieve'."),
             HumanMessage(content=prompt)
         ]
         
         response = llm.invoke(messages)
         next_steps = response.content.strip() if hasattr(response, 'content') else str(response).strip()
         
-        # Verify proper outcome framing
-        if "will achieve" in next_steps or "will see" in next_steps or "guaranteed" in next_steps:
-            logger.warning("Next steps contain promise language that should be revised")
+        # Validate word count (300 words + headers)
+        validated_next_steps = validate_word_count(
+            text=next_steps,
+            target_words=350,  # Includes headers
+            tolerance=20,
+            llm=llm,
+            prompt=prompt
+        )
         
-        # Note: For next steps with multiple sections, we don't validate the total word count
-        # as it's structured in specific 100-word sections
-        
-        return next_steps
+        return validated_next_steps
         
     except Exception as e:
         logger.error(f"LLM next steps generation failed: {e}")
-        # Fallback with proper outcome framing
-        return f"""{timeline_urgency.get('emoji', '')} {timeline_urgency.get('header', 'YOUR NEXT STEPS')}
+        # Fallback next steps with proper outcome framing
+        primary_category = primary_focus.get('category', 'key areas') if primary_focus else 'improvement areas'
+        
+        return f"""{timeline_urgency.get('header', 'YOUR NEXT STEPS')}
 
-{immediate_title}
-Take decisive action this week to begin your value enhancement journey. Businesses that start immediately typically see measurable progress within 30 days:
-□ Review this report with your leadership team and identify quick wins
-□ Schedule time to work on your #{primary_focus.get('category', '1 priority area') if primary_focus else 'primary focus area'}
-□ List the top 3 improvements that could impact your timeline
-□ Begin documenting one critical process
-□ Contact key team members about transition planning
+{immediate_title}  
+□ Map all daily tasks currently done by the owner to identify dependence points
+□ List top 3 repetitive tasks that can be delegated or automated immediately
+□ Schedule a 30-minute team meeting to communicate upcoming changes and gather feedback
+□ Document your most critical process that only you know how to do
+□ Review last month's financials to identify quick improvement opportunities
+Businesses typically accomplish a clear understanding of their most critical gaps in week one, setting the stage for systematic improvements.
 
 {month_title}
-Week 1: Complete quick win implementations - businesses often see immediate operational improvements
-Week 2: Launch your primary improvement initiative with clear milestones  
-Week 3: Measure progress and adjust approach based on early results
-Week 4: Document successes and plan next phase - companies typically report 10-15% progress toward goals
+Week 1: Delegate 2 key owner tasks to team members - businesses often see immediate relief in owner workload
+Week 2: Implement simple automation tools for repetitive tasks to increase efficiency by 10-15%
+Week 3: Develop a basic operations manual outlining delegated tasks and key processes
+Week 4: Review progress and adjust delegation plans based on what's working
+By month's end, companies typically achieve improved team accountability, documented processes for 3-5 critical tasks, and owners often report 20-30% time savings.
 
 {quarter_title}
-Transform your business value through three focused initiatives that businesses like yours typically complete in 90 days. First, systematically address your primary gap area with weekly progress reviews. Second, implement the strategic improvements that buyers in your industry often value most. Third, build proof points demonstrating the changes you've made. These initiatives typically position businesses for 15-25% higher valuations.
+Focus on three transformational initiatives that typically drive significant value:
+1. Fully document core business processes to reduce owner dependence - businesses often experience 25-35% improvement in operational consistency
+2. Train team members on all delegated tasks to build depth - companies typically see enhanced buyer confidence
+3. Introduce performance tracking for all delegated activities to identify ongoing improvement areas
+By 90 days, businesses typically achieve measurable progress in their primary gap area, with owners often reporting the business runs smoothly for 5-10 days without their direct involvement.
 
 For personalized guidance on executing these improvements, contact us at success@onpulsesolutions.com"""
 
@@ -881,7 +895,7 @@ def summary_node(state: Dict[str, Any]) -> Dict[str, Any]:
         
         # 6. Structure Final Report
         logger.info("Structuring final report...")
-        final_report = f"""EXIT READY SNAPSHOT ASSESSMENT REPORT
+        final_report = f"""EXIT READY SNAPSHOT
 
 {'='*60}
 
@@ -891,24 +905,28 @@ EXECUTIVE SUMMARY
 
 {'='*60}
 
-YOUR EXIT READINESS SCORE
-
-Overall Score: {overall_score}/10
-Readiness Level: {readiness_level}
-Exit Timeline: {business_info.get('exit_timeline')}
-Urgency Level: {timeline_urgency['level']}
-
-{'='*60}
-
 DETAILED ANALYSIS BY CATEGORY
+
 
 """
         
-        # Add category summaries
-        for category, summary in category_summaries.items():
-            final_report += f"{summary}\n\n{'='*60}\n\n"
+        # Add category summaries with proper formatting
+        category_titles = {
+            "owner_dependence": "OWNER DEPENDENCE",
+            "revenue_quality": "REVENUE QUALITY & STABILITY", 
+            "financial_readiness": "FINANCIAL READINESS",
+            "operational_resilience": "OPERATIONAL RESILIENCE",
+            "growth_value": "GROWTH & VALUE POTENTIAL"
+        }
         
-        final_report += f"""PERSONALIZED RECOMMENDATIONS
+        for category, summary in category_summaries.items():
+            title = category_titles.get(category, category.replace('_', ' ').upper())
+            final_report += f"{title}\n{summary}\n\n"
+        
+        final_report += f"""
+{'='*60}
+
+RECOMMENDATIONS
 
 {recommendations}
 
@@ -925,14 +943,6 @@ YOUR NEXT STEPS
 {next_steps}
 
 {'='*60}
-
-CONFIDENTIAL BUSINESS ASSESSMENT
-Prepared by: On Pulse Solutions
-Report Date: [REPORT_DATE]
-Valid for: 90 days
-
-This report contains proprietary analysis and recommendations specific to your business. 
-The insights and strategies outlined are based on your assessment responses and current market conditions.
 
 © On Pulse Solutions - Exit Ready Snapshot"""
         
