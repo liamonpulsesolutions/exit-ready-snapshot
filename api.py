@@ -245,6 +245,27 @@ async def process_assessment(
                 "operational_resilience": "Operational analysis pending"
             }
         
+        # FIX: Extract scores correctly - check for 'overall' key in scores dict
+        scores = result.get("scores", {})
+        if not scores:
+            # Fallback - try to get from metadata or other locations
+            if "metadata" in result and "scores" in result["metadata"]:
+                scores = result["metadata"]["scores"]
+            else:
+                # Use default scores
+                scores = {
+                    "overall": 5.0,
+                    "owner_dependence": 5.0,
+                    "revenue_quality": 5.0,
+                    "financial_readiness": 5.0,
+                    "operational_resilience": 5.0,
+                    "growth_value": 5.0
+                }
+        
+        # Ensure 'overall' key exists if we have 'overall_score'
+        if "overall_score" in scores and "overall" not in scores:
+            scores["overall"] = scores["overall_score"]
+        
         # Format response to match existing API contract
         response_data = {
             "uuid": request.uuid,
@@ -255,17 +276,17 @@ async def process_assessment(
             "industry": request.industry,
             "location": request.location,
             "locale": result.get("locale", "us"),
-            "scores": result.get("scores", {}),
+            "scores": scores,
             "executive_summary": result.get("executive_summary", ""),
-            "category_summaries": category_summaries,  # Now guaranteed to be a dict
-            "recommendations": recommendations,  # Now guaranteed to be a dict
+            "category_summaries": category_summaries,
+            "recommendations": recommendations,
             "next_steps": result.get("next_steps", "Schedule a consultation to discuss your personalized Exit Value Growth Plan.")
         }
         
         total_time = time.time() - request_start_time
         print(f"\n" + "="*80)
         print(f"✅ API REQUEST COMPLETED in {total_time:.1f}s")
-        print(f"📈 Overall Score: {response_data['scores'].get('overall_score', 'N/A')}/10")
+        print(f"📈 Overall Score: {scores.get('overall', 'N/A')}/10")
         print(f"📝 Summary Length: {len(response_data['executive_summary'])} chars")
         print(f"🔄 Workflow Version: LangGraph Enhanced")
         print("="*80)

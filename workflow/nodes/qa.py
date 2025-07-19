@@ -1,6 +1,7 @@
 """
 QA Node - Quality assurance with LLM intelligence, formatting standardization, and outcome framing verification.
 Performs mechanical checks, intelligent analysis, Placid-compatible formatting, and ensures proper outcome language.
+FIXED: Use ensure_json_response for all LLM calls requiring JSON output.
 """
 
 import logging
