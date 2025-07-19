@@ -220,13 +220,8 @@ Please note that businesses in your industry typically see significant value imp
         primary_cat = focus_areas['primary']['category']
         if primary_cat in improvements:
             impact = improvements[primary_cat].get('value_impact', '20-30%')
-            # Ensure it's a range
-            if '-' not in str(impact) and '%' in str(impact):
-                # Convert single number to range
-                num = int(impact.replace('%', ''))
-                primary_impact = f"{num-5}-{num+5}%"
-            else:
-                primary_impact = impact
+            # Use the robust parser
+            primary_impact = parse_percentage_range(str(impact), "20-30%")
     
     prompt = f"""Create an executive summary for this Exit Ready Snapshot assessment.
 
